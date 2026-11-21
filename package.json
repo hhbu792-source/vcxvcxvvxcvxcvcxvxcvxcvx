@@ -1,7 +1,7 @@
 {
   "name": "discord-defender-bot",
   "version": "1.0.0",
-  "description": "Gelistirilmis Discord Defender (Guard) Sistemi - Anti-Nuke, Anti-Raid, Chat Defense, Oto-Yedek/Geri Yukleme, Karantina ve Acil Kilit",
+  "description": "Gelistirilmis Discord Defender (Guard) Sistemi - Anti-Nuke, Anti-Raid, Chat Defense, Oto-Yedek/Geri Yukleme, Blacklist ve Acil Kilit",
   "main": "src/index.js",
   "type": "commonjs",
   "engines": {

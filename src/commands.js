@@ -20,7 +20,7 @@ const MODULE_CHOICES = [
 ];
 
 const PUNISHMENT_CHOICES = [
-  { name: "Karantina (Rolleri al + KARANTINA + sustur)", value: "quarantine" },
+  { name: "Blacklist (Rolleri al + Blacklist rolu ver)", value: "blacklist" },
   { name: "Rolleri Al (Strip Roles)", value: "strip_roles" },
   { name: "Sunucudan At (Kick)", value: "kick" },
   { name: "Sunucudan Yasakla (Ban)", value: "ban" },
@@ -43,7 +43,7 @@ function buildCommands() {
       sub
         .setName("kurulum")
         .setDescription(
-          "Tek tikla kurulum: log kanali, karantina rolu ve ilk sunucu yedegini olusturur."
+          "Tek tikla kurulum: log kanali, blacklist rolu ve ilk sunucu yedegini olusturur."
         )
     )
     .addSubcommand((sub) =>
@@ -167,12 +167,12 @@ function buildCommands() {
     )
     .addSubcommand((sub) =>
       sub
-        .setName("karantina")
-        .setDescription("Bir uyeyi manuel olarak karantinaya alir (eski rolleri saklanir).")
+        .setName("blacklist")
+        .setDescription("Bir uyeyi manuel olarak blacklist'e alir (eski rolleri saklanir).")
         .addUserOption((opt) =>
           opt
             .setName("kullanici")
-            .setDescription("Karantinaya alinacak uye")
+            .setDescription("Blacklist'e alinacak uye")
             .setRequired(true)
         )
         .addStringOption((opt) =>
@@ -184,12 +184,12 @@ function buildCommands() {
     )
     .addSubcommand((sub) =>
       sub
-        .setName("karantina-kaldir")
-        .setDescription("Karantinadaki uyeyi cikarir ve eski rollerini geri yukler.")
+        .setName("blacklist-kaldir")
+        .setDescription("Blacklist'teki uyeyi cikarir ve eski rollerini geri yukler.")
         .addUserOption((opt) =>
           opt
             .setName("kullanici")
-            .setDescription("Karantinadan cikarilacak uye")
+            .setDescription("Blacklist'i kaldirilacak uye")
             .setRequired(true)
         )
     )

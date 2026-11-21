@@ -20,16 +20,18 @@ const DANGEROUS_PERMISSION_BITFIELD = DANGEROUS_PERMISSIONS.reduce(
   0n
 );
 
-const PUNISHMENT_MODES = ["quarantine", "strip_roles", "kick", "ban"];
+const DEFAULT_BLACKLIST_ROLE_ID = "1573704309034586286";
+
+const PUNISHMENT_MODES = ["blacklist", "strip_roles", "kick", "ban"];
 
 const WHITELIST_SCOPES = ["all", "antiNuke", "antiRaid", "chatDefense"];
 
 function createDefaultGuildSettings() {
   return {
     enabled: true,
-    punishmentMode: "quarantine", // quarantine | strip_roles | kick | ban
+    punishmentMode: "blacklist", // blacklist | strip_roles | kick | ban
     logChannelId: null,
-    quarantineRoleId: null,
+    blacklistRoleId: DEFAULT_BLACKLIST_ROLE_ID,
     modules: {
       antiNuke: true,
       antiRaid: true,
@@ -80,7 +82,7 @@ function createDefaultGuildSettings() {
       roles: {},
       bots: {},
     },
-    quarantinedUsers: {},
+    blacklistedUsers: {},
     lockdown: {
       active: false,
       activatedAt: null,
@@ -128,6 +130,7 @@ const SAFE_OFFICIAL_DOMAINS = new Set([
 ]);
 
 module.exports = {
+  DEFAULT_BLACKLIST_ROLE_ID,
   DANGEROUS_PERMISSIONS,
   DANGEROUS_PERMISSION_BITFIELD,
   PUNISHMENT_MODES,

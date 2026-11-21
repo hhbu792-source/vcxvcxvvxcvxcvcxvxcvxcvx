@@ -19,7 +19,9 @@ if (!config.token) {
 }
 
 const defender = new DefenderEngine({
-  quarantineRoleName: config.quarantineRoleName,
+  blacklistRoleId: config.blacklistRoleId,
+  blacklistRoleName: config.blacklistRoleName,
+  ticketPanelChannelId: config.ticketPanelChannelId,
   defaultLogChannelName: config.defaultLogChannelName,
   snapshotIntervalMs: config.snapshotIntervalMs,
 });
@@ -131,14 +133,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (sub === "kurulum") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const logCh = await defender.punishmentEngine.ensureLogChannel(guild);
-      const qRole = await defender.punishmentEngine.ensureQuarantineRole(guild);
+      const blRole = await defender.punishmentEngine.ensureBlacklistRole(guild);
       const snap = defender.snapshotManager.captureGuild(guild);
 
       await interaction.editReply(
         [
           "Defender kurulumu tamamlandi.",
           `Log Kanali: ${logCh}`,
-          `Karantina Rolu: <@&${qRole.id}>`,
+          `Blacklist Rolu: <@&${blRole.id}>`,
           `Ilk Yedek: ${Object.keys(snap.roles).length} rol, ${Object.keys(snap.channels).length} kanal kaydedildi.`,
           "",
           "Not: Guvendiginiz yoneticileri `/defender whitelist-ekle` ile eklemeyi unutmayin (Sunucu Sahibi otomatik muaftir).",
@@ -175,8 +177,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
             name: "Kayitlar",
             value: [
               `Log Kanali: ${st.logChannelId ? `<#${st.logChannelId}>` : "Ayarlanmadi"}`,
-              `Karantina Rolu: ${st.quarantineRoleId ? `<@&${st.quarantineRoleId}>` : "Ayarlanmadi"}`,
-              `Karantinadaki Uye: **${st.quarantinedCount}**`,
+              `Blacklist Rolu: ${st.blacklistRoleId ? `<@&${st.blacklistRoleId}>` : "Ayarlanmadi"}`,
+              `Blacklist'teki Uye: **${st.blacklistedCount}**`,
               `Toplam Olay: **${st.incidentCount}**`,
             ].join("\n"),
             inline: true,
@@ -424,17 +426,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (sub === "karantina") {
+    if (sub === "blacklist") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const user = interaction.options.getUser("kullanici", true);
       const reason =
-        interaction.options.getString("sebep", false) || "Manuel karantina";
+        interaction.options.getString("sebep", false) || "Manuel blacklist";
       const member = await guild.members.fetch(user.id).catch(() => null);
       if (!member) {
         await interaction.editReply("Kullanici sunucuda bulunamadi.");
         return;
       }
-      const res = await defender.punishmentEngine.quarantineMember(
+      const res = await defender.punishmentEngine.blacklistMember(
         guild,
         member,
         reason,
@@ -442,28 +444,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
       );
       if (!res.ok) {
         await interaction.editReply(
-          "Bu kullanici karantinaya alinamadi (rol hiyerarsisi veya sunucu sahibi)."
+          "Bu kullanici blacklist'e alinamadi (rol hiyerarsisi veya sunucu sahibi)."
         );
         return;
       }
 
       await defender.punishmentEngine.logIncident(guild, {
-        module: "QUARANTINE",
+        module: "BLACKLIST",
         severity: "HIGH",
-        action: "Manuel Karantina",
+        action: "Manuel Blacklist",
         executorId: interaction.user.id,
         target: `<@${user.id}>`,
         details: `Sebep: ${reason} (${res.removedRolesCount} rol saklandi)`,
-        punishment: "quarantine",
+        punishment: "blacklist",
       });
 
       await interaction.editReply(
-        `<@${user.id}> karantinaya alindi (${res.removedRolesCount} eski rol yedeklendi).`
+        `<@${user.id}> blacklist'e alindi (<@&${res.blacklistRoleId}> verildi, ${res.removedRolesCount} eski rol yedeklendi).`
       );
       return;
     }
 
-    if (sub === "karantina-kaldir") {
+    if (sub === "blacklist-kaldir") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const user = interaction.options.getUser("kullanici", true);
       const member = await guild.members.fetch(user.id).catch(() => null);
@@ -471,23 +473,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.editReply("Kullanici sunucuda bulunamadi.");
         return;
       }
-      const res = await defender.punishmentEngine.unquarantineMember(
+      const res = await defender.punishmentEngine.unblacklistMember(
         guild,
         member,
         interaction.user.tag
       );
 
       await defender.punishmentEngine.logIncident(guild, {
-        module: "QUARANTINE",
+        module: "BLACKLIST",
         severity: "INFO",
-        action: "Karantina Kaldirildi",
+        action: "Blacklist Kaldirildi",
         executorId: interaction.user.id,
         target: `<@${user.id}>`,
         details: `${res.restoredCount} eski rol geri verildi.`,
       });
 
       await interaction.editReply(
-        `<@${user.id}> karantinadan cikarildi (${res.restoredCount} eski rol geri yuklendi).`
+        `<@${user.id}> blacklist'ten cikarildi (${res.restoredCount} eski rol geri yuklendi).`
       );
       return;
     }

@@ -9,7 +9,13 @@ const config = {
   token: process.env.DISCORD_TOKEN || "",
   clientId: process.env.CLIENT_ID || "",
   guildId: process.env.GUILD_ID || "",
-  quarantineRoleName: (process.env.QUARANTINE_ROLE_NAME || "KARANTINA").trim(),
+  blacklistRoleId: (
+    process.env.BLACKLIST_ROLE_ID || "1573704309034586286"
+  ).trim(),
+  blacklistRoleName: (process.env.BLACKLIST_ROLE_NAME || "BLACKLIST").trim(),
+  ticketPanelChannelId: (
+    process.env.TICKET_PANEL_CHANNEL_ID || "1573522477655654544"
+  ).trim(),
   defaultLogChannelName: (
     process.env.DEFAULT_LOG_CHANNEL_NAME || "defender-log"
   ).trim(),

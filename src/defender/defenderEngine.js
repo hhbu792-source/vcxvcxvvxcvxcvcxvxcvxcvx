@@ -29,7 +29,9 @@ class DefenderEngine {
     this.punishmentEngine =
       options.punishmentEngine ||
       new PunishmentEngine(this.store, this.snapshotManager, {
-        quarantineRoleName: options.quarantineRoleName || "KARANTINA",
+        blacklistRoleId: options.blacklistRoleId,
+        blacklistRoleName: options.blacklistRoleName || "BLACKLIST",
+        ticketPanelChannelId: options.ticketPanelChannelId || null,
         defaultLogChannelName: options.defaultLogChannelName || "defender-log",
         logger: this.logger,
       });
@@ -227,12 +229,12 @@ class DefenderEngine {
       enabled: g.enabled,
       punishmentMode: g.punishmentMode,
       logChannelId: g.logChannelId,
-      quarantineRoleId: g.quarantineRoleId,
+      blacklistRoleId: g.blacklistRoleId,
       modules: { ...g.modules },
       thresholds: { ...g.thresholds },
       lockdownActive: Boolean(g.lockdown.active),
       raidModeActive: this.antiRaid.isRaidModeActive(guild.id),
-      quarantinedCount: Object.keys(g.quarantinedUsers).length,
+      blacklistedCount: Object.keys(g.blacklistedUsers).length,
       whitelistCounts: {
         users: Object.keys(g.whitelist.users).length,
         roles: Object.keys(g.whitelist.roles).length,

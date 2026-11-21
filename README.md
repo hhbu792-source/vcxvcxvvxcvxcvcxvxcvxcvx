@@ -14,7 +14,7 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
    - Sunucu ayarı sabotajı (sunucu adı / doğrulama seviyesi değişimini geri alır)
    - **Anti-Bot:** Onaylı (whitelist) olmayan bot eklendiğinde botu anında atar ve ekleyen kişiyi cezalandırır
    - **Anti-Webhook:** İzinsiz webhook açıldığında webhook'u anında siler ve açanı cezalandırır
-   - **Öz-Savunma:** `KARANTINA` rolü veya `#defender-log` kanalı kurcalanırsa anında engeller ve geri yükler
+   - **Öz-Savunma:** Blacklist rolü (`1573704309034586286`) veya `#defender-log` kanalı kurcalanırsa anında engeller ve geri yükler
 
 2. **Anti-Raid & Yan Hesap Kalkanı (`src/defender/antiRaid.js`)**
    - Hızlı giriş patlamasını (varsayılan 12 saniyede 6 giriş) algılayıp **Raid Modu** ve **Otomatik Acil Kilit** açar, saldırı dalgasındaki hesapları izole eder
@@ -26,13 +26,13 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
    - **Davet Engelleyici:** Sunucu dışı Discord davet linklerini ve boşluklu gizleme girişimlerini engeller
    - **Toplu Etiket & `@everyone`/`@here` Koruması**
    - **Anti-Spam:** Hızlı mesaj burst, aynı mesaj tekrarı, satır duvarı, Zalgo bozuk karakter ve aşırı emoji flood koruması
-   - **Kademeli Ceza Merdiveni:** 1. İhlal (Sil + Uyarı) -> 2. İhlal (1 dk Timeout) -> 3. İhlal (10 dk Timeout) -> 4. İhlal (Otomatik Karantina)
+   - **Kademeli Ceza Merdiveni:** 1. İhlal (Sil + Uyarı) -> 2. İhlal (1 dk Timeout) -> 3. İhlal (10 dk Timeout) -> 4. İhlal (Otomatik Blacklist)
 
 4. **Sunucu Yedeği & Oto-Geri Yükleme (`src/defender/snapshotManager.js`)**
    - Sunucunun tüm rol, kanal, kategori ve kanal izin overwrites yapısını periyodik olarak yedekler ve saldırı sonrası otomatik geri yükler
 
-5. **Karantina Kasası, Acil Kilit & Olay Kayıtları (`src/defender/punishmentEngine.js`)**
-   - Karantinaya alınan üyenin eski rolleri saklanır; `/defender karantina-kaldir` ile eski roller eksiksiz geri verilir
+5. **Blacklist Kasası, Acil Kilit & Olay Kayıtları (`src/defender/punishmentEngine.js`)**
+   - Blacklist'e alınan üyenin eski rolleri saklanır ve `1573704309034586286` rolü verilir; `/defender blacklist-kaldir` ile eski roller eksiksiz geri verilir
    - Acil kilitte her kanalın mevcut `@everyone` izinleri kaydedilir; `/defender kilit-kaldir` ile eski izinler aynen geri yüklenir
    - Her güvenlik olayı `#INC-1`, `#INC-2` şeklinde numaralandırılarak `#defender-log` kanalına kaydedilir
 
@@ -40,18 +40,18 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
 
 | Komut | Açıklama |
 | --- | --- |
-| `/defender kurulum` | `#defender-log`, `KARANTINA` rolü ve ilk sunucu yedeğini tek tıkla kurar |
+| `/defender kurulum` | `#defender-log`, Blacklist rolü (`1573704309034586286`) ve ilk sunucu yedeğini tek tıkla kurar |
 | `/defender durum` | Tüm koruma modüllerinin canlı durumunu gösterir |
 | `/defender modul <ad> <aktif>` | İstenen koruma modülünü açar/kapatır *(Sunucu Sahibi / Whitelist Admin)* |
-| `/defender ceza <mod>` | Ceza modunu seçer (`quarantine`, `strip_roles`, `kick`, `ban`) *(Sunucu Sahibi / Whitelist Admin)* |
+| `/defender ceza <mod>` | Ceza modunu seçer (`blacklist`, `strip_roles`, `kick`, `ban`) *(Sunucu Sahibi / Whitelist Admin)* |
 | `/defender log <kanal>` | Güvenlik log kanalını ayarlar |
 | `/defender whitelist-ekle <tur> <id> [kapsam]` | Güvenli listeye kullanıcı, rol veya bot ekler |
 | `/defender whitelist-cikar <tur> <id>` | Güvenli listeden çıkarır |
 | `/defender whitelist-liste` | Güvenli listeyi gösterir |
 | `/defender kilit [sebep]` | Acil durum sunucu kilidini açar |
 | `/defender kilit-kaldir` | Kilidi ve raid modunu kaldırıp eski izinleri geri yükler |
-| `/defender karantina <kullanici> [sebep]` | Üyeyi manuel karantinaya alır |
-| `/defender karantina-kaldir <kullanici>` | Karantinayı kaldırır ve eski rolleri geri verir |
+| `/defender blacklist <kullanici> [sebep]` | Üyeyi manuel blacklist'e alır (`1573704309034586286` rolü verilir) |
+| `/defender blacklist-kaldir <kullanici>` | Blacklist'i kaldırır ve eski rolleri geri verir |
 | `/defender yedek` | Anlık sunucu yedeği (snapshot) alır |
 | `/defender olaylar` | Son 10 güvenlik olayını listeler |
 

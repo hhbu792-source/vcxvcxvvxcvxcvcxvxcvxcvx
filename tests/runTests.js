@@ -361,18 +361,55 @@ async function runTests() {
   assert.strictEqual(cmds.length, 1);
   assert.strictEqual(cmds[0].name, "defender");
   assert(cmds[0].options.length >= 12);
-  console.log(`[OK] Slash komutlari: /defender (${cmds[0].options.length} alt komut) dogrulandi.`);
+  assert(cmds[0].options.some((o) => o.name === "blacklist"));
+  assert(cmds[0].options.some((o) => o.name === "blacklist-kaldir"));
+  assert(!cmds[0].options.some((o) => o.name === "karantina"));
+  console.log(`[OK] Slash komutlari: /defender (${cmds[0].options.length} alt komut, blacklist/blacklist-kaldir) dogrulandi.`);
 
-  // 2. Setup mock guild & DefenderEngine (in-memory, 0ms audit delay)
+  // 2. Setup mock guild with exact Blacklist Role ID 1573704309034586286 & ticket panel channel 1573522477655654544
   const { guild, addAudit, addMember } = createMockGuild();
+  const configuredBlRole = {
+    id: "1573704309034586286",
+    guild,
+    name: "Blacklist",
+    color: 0x000000,
+    hoist: false,
+    mentionable: false,
+    managed: false,
+    position: 5,
+    rawPosition: 5,
+    permissions: makeBitfield(0n),
+    deleted: false,
+    async setPermissions(bits) {
+      configuredBlRole.permissions = makeBitfield(bits);
+      return configuredBlRole;
+    },
+  };
+  guild.roles.cache.set(configuredBlRole.id, configuredBlRole);
+
+  const destekAcCh = await guild.channels.create({
+    name: "destek-ac",
+    type: ChannelType.GuildText,
+  });
+  guild.channels.cache.delete(destekAcCh.id);
+  destekAcCh.id = "1573522477655654544";
+  guild.channels.cache.set(destekAcCh.id, destekAcCh);
+
   const defender = new DefenderEngine({
     persist: false,
     auditLogDelayMs: 0,
     warnNoticeMs: 0,
+    blacklistRoleId: "1573704309034586286",
+    ticketPanelChannelId: "1573522477655654544",
   });
 
   const logCh = await defender.punishmentEngine.ensureLogChannel(guild);
-  const qRole = await defender.punishmentEngine.ensureQuarantineRole(guild);
+  const qRole = await defender.punishmentEngine.ensureBlacklistRole(guild);
+  assert.strictEqual(qRole.id, "1573704309034586286");
+  assert.strictEqual(
+    destekAcCh.permissionOverwrites.cache.has("1573704309034586286"),
+    false
+  );
   const modRole = await guild.roles.create({
     name: "Moderator",
     color: 0x3498db,
@@ -422,7 +459,7 @@ async function runTests() {
   );
   console.log("[OK] Kademeli Whitelist: Kapsam bazli muafiyet ve sunucu sahibi korumasi dogrulandi.");
 
-  // 4. Anti-Nuke: Channel Delete Flood -> Quarantine Attacker + Auto-Restore BOTH deleted channels!
+  // 4. Anti-Nuke: Channel Delete Flood -> Blacklist Attacker (1573704309034586286) + Auto-Restore BOTH deleted channels!
   const attacker = addMember({
     id: "nuker-1",
     username: "nuker",
@@ -437,16 +474,16 @@ async function runTests() {
   addAudit(AuditLogEvent.ChannelDelete, attacker.id, ch2.id);
   const d2 = await defender.antiNuke.onChannelDelete(ch2);
   assert.strictEqual(d2.triggered, true);
-  assert.strictEqual(d2.punish.action, "quarantine");
-  assert.strictEqual(attacker.roles.cache.has(qRole.id), true);
+  assert.strictEqual(d2.punish.action, "blacklist");
+  assert.strictEqual(attacker.roles.cache.has("1573704309034586286"), true);
   assert.strictEqual(attacker.roles.cache.has(modRole.id), false);
   assert.strictEqual(d2.restoredNames.length, 2);
   assert(guild.channels.cache.find((c) => c.name === "sohbet"));
   assert(guild.channels.cache.find((c) => c.name === "duyurular"));
-  console.log("[OK] Anti-Nuke Kanal Silme: Saldirgan karantinaya alindi, silinen 2 kanal oto geri yuklendi.");
+  console.log("[OK] Anti-Nuke Kanal Silme: Saldirgan blacklist'e (1573704309034586286) alindi, silinen 2 kanal oto geri yuklendi.");
 
-  // 5. Quarantine Vault Restore test (unquarantine gives back exact saved roles!)
-  const unqRes = await defender.punishmentEngine.unquarantineMember(
+  // 5. Blacklist Vault Restore test (unblacklist gives back exact saved roles!)
+  const unqRes = await defender.punishmentEngine.unblacklistMember(
     guild,
     attacker,
     "Owner"
@@ -454,9 +491,9 @@ async function runTests() {
   assert.strictEqual(unqRes.ok, true);
   assert.strictEqual(unqRes.restoredCount, 1);
   assert.strictEqual(attacker.roles.cache.has(modRole.id), true);
-  assert.strictEqual(attacker.roles.cache.has(qRole.id), false);
+  assert.strictEqual(attacker.roles.cache.has("1573704309034586286"), false);
   assert.strictEqual(attacker.timeoutMs, null);
-  console.log("[OK] Karantina Kasasi: Karantina kaldirilinca saklanan eski roller geri verildi.");
+  console.log("[OK] Blacklist Kasasi: Blacklist kaldirilinca saklanan eski roller geri verildi.");
 
   // 6. Anti-Nuke: INSTANT Dangerous Role Permission Escalation -> Reverts permissions + Punishes!
   const escalater = addMember({
@@ -477,7 +514,7 @@ async function runTests() {
     false
   );
   assert.strictEqual(escalater.roles.cache.has(qRole.id), true);
-  console.log("[OK] Anti-Nuke Yetki Yukseltme: Rol izni aninda geri alindi ve yetkisiz kisi karantinaya alindi.");
+  console.log("[OK] Anti-Nuke Yetki Yukseltme: Rol izni aninda geri alindi ve yetkisiz kisi blacklist'e alindi.");
 
   // 7. Anti-Nuke: Unauthorized Dangerous Role Grant to Member -> Strips role + Punishes!
   const granter = addMember({
@@ -519,7 +556,7 @@ async function runTests() {
   assert.strictEqual(botRes.botRemoved, true);
   assert.strictEqual(rogueBot.kicked, true);
   assert.strictEqual(inviter.roles.cache.has(qRole.id), true);
-  console.log("[OK] Anti-Bot: Onaysiz bot atildi ve ekleyen kisi karantinaya alindi.");
+  console.log("[OK] Anti-Bot: Onaysiz bot atildi ve ekleyen kisi blacklist'e alindi.");
 
   // 10. Anti-Webhook: Unauthorized Webhook Creation -> Webhook Deleted + Creator Punished!
   const hookCreator = addMember({ id: "nuker-6", username: "hooker" });
@@ -538,7 +575,7 @@ async function runTests() {
   assert.strictEqual(whRes.deletedHooks, 1);
   assert.strictEqual(hookDeleted, true);
   assert.strictEqual(hookCreator.roles.cache.has(qRole.id), true);
-  console.log("[OK] Anti-Webhook: Yetkisiz webhook silindi ve olusturan karantinaya alindi.");
+  console.log("[OK] Anti-Webhook: Yetkisiz webhook silindi ve olusturan blacklist'e alindi.");
 
   // 11. Anti-Raid & Alt-Shield: Suspicious brand-new account + Join Velocity Wave + Auto-Lockdown!
   const suspiciousAlt = addMember({
@@ -621,7 +658,7 @@ async function runTests() {
   assert.strictEqual(leakRes.module, "ANTI_TOKEN_LEAK");
   assert.strictEqual(leakMsg.deleted, true);
 
-  // 12c. Phishing + Invite + Escalation Ladder -> reaches Strike 4 -> Auto-Quarantine!
+  // 12c. Phishing + Invite + Escalation Ladder -> reaches Strike 4 -> Auto-Blacklist!
   const spammer = addMember({ id: "spammer-1", username: "spammer" });
   // Phishing gives 3 strikes immediately -> timeout 10m!
   const phishMsg = createChatMsg(
@@ -635,13 +672,13 @@ async function runTests() {
   assert.strictEqual(phishRes.actionTaken, "timeout_10m");
   assert.strictEqual(phishMsg.deleted, true);
 
-  // Next offense (invite, +1 strike -> 4 total) -> Auto-Quarantine!
+  // Next offense (invite, +1 strike -> 4 total) -> Auto-Blacklist (1573704309034586286)!
   const invMsg = createChatMsg(liveSohbet, spammer, "gel discord.gg/reklam123");
   const invRes = await defender.chatDefense.onMessageCreate(invMsg);
   assert.strictEqual(invRes.blocked, true);
   assert.strictEqual(invRes.strikes, 4);
-  assert.strictEqual(invRes.actionTaken, "quarantine");
-  assert.strictEqual(spammer.roles.cache.has(qRole.id), true);
+  assert.strictEqual(invRes.actionTaken, "blacklist");
+  assert.strictEqual(spammer.roles.cache.has("1573704309034586286"), true);
 
   // 12d. Mass Mention + Unauthorized @everyone
   const mentioner = addMember({ id: "ment-1", username: "ment" });
@@ -669,7 +706,7 @@ async function runTests() {
   });
   assert.strictEqual(editRes.blocked, true);
   assert.strictEqual(editRes.module, "ANTI_PHISHING");
-  console.log("[OK] Sohbet Korumasi: Token/Webhook sizintisi, maskeli phishing, davet, mention, spam ve kademeli karantina dogrulandi.");
+  console.log("[OK] Sohbet Korumasi: Token/Webhook sizintisi, maskeli phishing, davet, mention, spam ve kademeli blacklist dogrulandi.");
 
   // 13. Forensic incident logs verified
   assert(logCh._sent.length >= 8);

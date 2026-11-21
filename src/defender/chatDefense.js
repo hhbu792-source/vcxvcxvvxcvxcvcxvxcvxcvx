@@ -156,11 +156,11 @@ class ChatDefenseEngine {
         module,
         reason: `Tekrarlayan sohbet ihlali (${totalStrikes} uyari): ${reason}`,
       });
-      actionTaken = q.action || "quarantine";
+      actionTaken = q.action || "blacklist";
       this.tracker.clearKey(strikeKey);
       await this._sendTempWarn(
         message.channel,
-        `<@${userId}> tekrarlayan güvenlik ihlalleri nedeniyle kısıtlandı (${reason}).`
+        `<@${userId}> tekrarlayan güvenlik ihlalleri nedeniyle blacklist'e alındı (${reason}).`
       );
     } else if (totalStrikes === 3) {
       if (message.member && typeof message.member.timeout === "function") {

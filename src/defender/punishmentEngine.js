@@ -3,7 +3,10 @@ const {
   EmbedBuilder,
   PermissionFlagsBits,
 } = require("discord.js");
-const { DANGEROUS_PERMISSION_BITFIELD } = require("./constants");
+const {
+  DANGEROUS_PERMISSION_BITFIELD,
+  DEFAULT_BLACKLIST_ROLE_ID,
+} = require("./constants");
 
 const SEVERITY_COLORS = {
   CRITICAL: 0xc0392b,
@@ -21,7 +24,10 @@ class PunishmentEngine {
   constructor(store, snapshotManager, options = {}) {
     this.store = store;
     this.snapshotManager = snapshotManager;
-    this.quarantineRoleName = options.quarantineRoleName || "KARANTINA";
+    this.blacklistRoleId =
+      options.blacklistRoleId || DEFAULT_BLACKLIST_ROLE_ID;
+    this.blacklistRoleName = options.blacklistRoleName || "BLACKLIST";
+    this.ticketPanelChannelId = options.ticketPanelChannelId || null;
     this.defaultLogChannelName = options.defaultLogChannelName || "defender-log";
     this.logger = options.logger || console;
 
@@ -102,36 +108,46 @@ class PunishmentEngine {
     return ch;
   }
 
-  async ensureQuarantineRole(guild) {
+  async ensureBlacklistRole(guild) {
     const g = this.store.getGuild(guild.id);
-    let role = g.quarantineRoleId
-      ? guild.roles.cache.get(g.quarantineRoleId)
-      : null;
+    const configuredId = this.blacklistRoleId || g.blacklistRoleId;
 
+    // 1. Prefer the exact configured Blacklist Role ID (1573704309034586286)
+    let role = configuredId ? guild.roles.cache.get(configuredId) : null;
+    if (!role && configuredId && typeof guild.roles.fetch === "function") {
+      role = await guild.roles.fetch(configuredId).catch(() => null);
+    }
+
+    // 2. Fallback: stored role ID or role matching BLACKLIST name
+    if (!role && g.blacklistRoleId && g.blacklistRoleId !== configuredId) {
+      role = guild.roles.cache.get(g.blacklistRoleId) || null;
+    }
     if (!role) {
       role = guild.roles.cache.find(
-        (r) => r.name.toLowerCase() === this.quarantineRoleName.toLowerCase()
+        (r) => r.name.toLowerCase() === this.blacklistRoleName.toLowerCase()
       );
     }
 
+    // 3. Last resort (e.g. another server without that role): create BLACKLIST role
     if (!role) {
       this.snapshotManager.markSelfAction(
-        `roleCreate:${guild.id}:${this.quarantineRoleName}`,
+        `roleCreate:${guild.id}:${this.blacklistRoleName}`,
         10_000
       );
       role = await guild.roles.create({
-        name: this.quarantineRoleName,
+        name: this.blacklistRoleName,
         color: 0x2c3e50,
         permissions: [],
-        reason: "Defender karantina rolu olusturuldu",
+        reason: "Defender blacklist rolu olusturuldu",
       });
     }
 
-    if (g.quarantineRoleId !== role.id) {
-      this.store.setQuarantineRole(guild.id, role.id);
+    if (g.blacklistRoleId !== role.id) {
+      this.store.setBlacklistRole(guild.id, role.id);
     }
 
-    // Apply deny overwrites on channels so quarantined users cannot type/speak
+    // Apply deny overwrites on channels without an existing overwrite,
+    // skipping the ticket panel channel so blacklisted users can still open Blacklist Kaldirma tickets!
     for (const ch of guild.channels.cache.values()) {
       if (
         ch.type !== ChannelType.GuildText &&
@@ -139,6 +155,9 @@ class PunishmentEngine {
         ch.type !== ChannelType.GuildForum &&
         ch.type !== ChannelType.GuildAnnouncement
       ) {
+        continue;
+      }
+      if (this.ticketPanelChannelId && ch.id === this.ticketPanelChannelId) {
         continue;
       }
       if (!ch.permissionOverwrites?.edit) continue;
@@ -159,7 +178,7 @@ class PunishmentEngine {
             Connect: false,
             Speak: false,
           },
-          { reason: "Defender karantina kisitlamasi" }
+          { reason: "Defender blacklist kisitlamasi" }
         )
         .catch(() => {});
     }
@@ -205,20 +224,20 @@ class PunishmentEngine {
     return removedIds;
   }
 
-  async quarantineMember(guild, member, reason, actorTag = "Defender") {
+  async blacklistMember(guild, member, reason, actorTag = "Defender") {
     if (!this._canActOnMember(guild, member)) {
       return { ok: false, reason: "HIERARCHY_BLOCKED" };
     }
 
-    const qRole = await this.ensureQuarantineRole(guild);
+    const blRole = await this.ensureBlacklistRole(guild);
     const removedRoles = await this.stripRemovableRoles(
       guild,
       member,
-      `Defender Karantina: ${reason}`
+      `Defender Blacklist: ${reason}`
     );
 
-    const savedRoles = removedRoles.filter((id) => id !== qRole.id);
-    this.store.saveQuarantinedUser(guild.id, member.id, {
+    const savedRoles = removedRoles.filter((id) => id !== blRole.id);
+    this.store.saveBlacklistedUser(guild.id, member.id, {
       previousRoles: savedRoles,
       reason,
       actor: actorTag,
@@ -227,40 +246,36 @@ class PunishmentEngine {
     if (member.roles?.add) {
       this.snapshotManager.markSelfAction(`memberUpdate:${member.id}`, 10_000);
       await member.roles
-        .add(qRole.id, `Defender Karantina: ${reason}`)
-        .catch(() => {});
-    }
-
-    // Secondary safeguard: apply 24h timeout on non-bot members where supported
-    if (!member.user?.bot && typeof member.timeout === "function") {
-      await member
-        .timeout(24 * 60 * 60 * 1000, `Defender Karantina: ${reason}`)
+        .add(blRole.id, `Defender Blacklist: ${reason}`)
         .catch(() => {});
     }
 
     return {
       ok: true,
-      action: "quarantine",
+      action: "blacklist",
       removedRolesCount: savedRoles.length,
-      quarantineRoleId: qRole.id,
+      blacklistRoleId: blRole.id,
     };
   }
 
-  async unquarantineMember(guild, member, actorTag = "Yonetici") {
+  async unblacklistMember(guild, member, actorTag = "Yonetici") {
     const g = this.store.getGuild(guild.id);
-    const qRoleId = g.quarantineRoleId;
-    const saved = this.store.popQuarantinedUser(guild.id, member.id);
+    const blRoleId = this.blacklistRoleId || g.blacklistRoleId;
+    const saved = this.store.popBlacklistedUser(guild.id, member.id);
 
-    if (qRoleId && member.roles?.cache?.has(qRoleId) && member.roles?.remove) {
-      this.snapshotManager.markSelfAction(`memberUpdate:${member.id}`, 10_000);
-      await member.roles
-        .remove(qRoleId, `Karantina kaldirildi (${actorTag})`)
-        .catch(() => {});
+    const idsToRemove = new Set([blRoleId, g.blacklistRoleId].filter(Boolean));
+    for (const rid of idsToRemove) {
+      if (member.roles?.cache?.has(rid) && member.roles?.remove) {
+        this.snapshotManager.markSelfAction(`memberUpdate:${member.id}`, 10_000);
+        await member.roles
+          .remove(rid, `Blacklist kaldirildi (${actorTag})`)
+          .catch(() => {});
+      }
     }
 
     if (typeof member.timeout === "function") {
       await member
-        .timeout(null, `Karantina kaldirildi (${actorTag})`)
+        .timeout(null, `Blacklist kaldirildi (${actorTag})`)
         .catch(() => {});
     }
 
@@ -275,7 +290,7 @@ class PunishmentEngine {
       if (validIds.length > 0) {
         this.snapshotManager.markSelfAction(`memberUpdate:${member.id}`, 10_000);
         await member.roles
-          .add(validIds, `Karantina sonrasi eski roller geri verildi (${actorTag})`)
+          .add(validIds, `Blacklist sonrasi eski roller geri verildi (${actorTag})`)
           .catch(() => {});
         restoredCount = validIds.length;
       }
@@ -317,11 +332,12 @@ class PunishmentEngine {
     }
 
     const g = this.store.getGuild(guild.id);
-    let mode = forceMode || g.punishmentMode || "quarantine";
+    let mode = forceMode || g.punishmentMode || "blacklist";
+    if (mode === "quarantine") mode = "blacklist";
 
-    // Rogue/compromised bots should at minimum be stripped & kicked if mode is quarantine
+    // Rogue/compromised bots should at minimum be stripped & kicked if mode is blacklist
     const isBot = Boolean(member?.user?.bot);
-    if (isBot && mode === "quarantine") {
+    if (isBot && mode === "blacklist") {
       mode = "kick";
     }
 
@@ -367,11 +383,16 @@ class PunishmentEngine {
       return { ok: true, action: "strip_roles", removedRolesCount: removed.length };
     }
 
-    // Default: quarantine (strip roles + save to vault + assign KARANTINA + timeout)
-    const res = await this.quarantineMember(guild, member, reason, `Defender/${module}`);
+    // Default: blacklist (strip roles + save to vault + assign Blacklist role 1573704309034586286)
+    const res = await this.blacklistMember(guild, member, reason, `Defender/${module}`);
     return res.ok
-      ? { ok: true, action: "quarantine", removedRolesCount: res.removedRolesCount }
-      : { ok: false, action: "quarantine_failed", reason: res.reason };
+      ? {
+          ok: true,
+          action: "blacklist",
+          removedRolesCount: res.removedRolesCount,
+          blacklistRoleId: res.blacklistRoleId,
+        }
+      : { ok: false, action: "blacklist_failed", reason: res.reason };
   }
 
   async enableLockdown(guild, reason = "Acil durum kilidi", actorTag = "Defender") {

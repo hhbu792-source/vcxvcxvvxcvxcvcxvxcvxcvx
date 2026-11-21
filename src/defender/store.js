@@ -21,7 +21,18 @@ function mergeDefaults(target, defaults) {
     roles: { ...(target?.whitelist?.roles || {}) },
     bots: { ...(target?.whitelist?.bots || {}) },
   };
-  result.quarantinedUsers = { ...(target?.quarantinedUsers || {}) };
+  result.blacklistedUsers = {
+    ...(target?.quarantinedUsers || {}),
+    ...(target?.blacklistedUsers || {}),
+  };
+  if (result.punishmentMode === "quarantine") {
+    result.punishmentMode = "blacklist";
+  }
+  if (!result.blacklistRoleId && target?.quarantineRoleId) {
+    result.blacklistRoleId = target.quarantineRoleId;
+  }
+  delete result.quarantinedUsers;
+  delete result.quarantineRoleId;
   result.lockdown = {
     ...defaults.lockdown,
     ...(target?.lockdown || {}),
@@ -114,9 +125,9 @@ class DefenderStore {
     this.save();
   }
 
-  setQuarantineRole(guildId, roleId) {
+  setBlacklistRole(guildId, roleId) {
     const g = this.getGuild(guildId);
-    g.quarantineRoleId = roleId;
+    g.blacklistRoleId = roleId;
     this.save();
   }
 
@@ -200,22 +211,22 @@ class DefenderStore {
     return false;
   }
 
-  saveQuarantinedUser(guildId, userId, record) {
+  saveBlacklistedUser(guildId, userId, record) {
     const g = this.getGuild(guildId);
-    g.quarantinedUsers[userId] = {
+    g.blacklistedUsers[userId] = {
       previousRoles: record.previousRoles || [],
       reason: record.reason || "Defender korumasi",
       actor: record.actor || "Defender",
-      quarantinedAt: Date.now(),
+      blacklistedAt: Date.now(),
     };
     this.save();
   }
 
-  popQuarantinedUser(guildId, userId) {
+  popBlacklistedUser(guildId, userId) {
     const g = this.getGuild(guildId);
-    const rec = g.quarantinedUsers[userId] || null;
+    const rec = g.blacklistedUsers[userId] || null;
     if (rec) {
-      delete g.quarantinedUsers[userId];
+      delete g.blacklistedUsers[userId];
       this.save();
     }
     return rec;

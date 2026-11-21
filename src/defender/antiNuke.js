@@ -296,7 +296,7 @@ class AntiNukeEngine {
     }
 
     const g = this.store.getGuild(guild.id);
-    const isQuarantineRole = g.quarantineRoleId === role.id;
+    const isBlacklistRole = g.blacklistRoleId === role.id;
     const key = `${guild.id}:roleDel:${executorId}`;
     const res = this.tracker.record(
       key,
@@ -305,19 +305,19 @@ class AntiNukeEngine {
       Date.now()
     );
 
-    if (!isQuarantineRole && res.count < g.thresholds.roleDeleteLimit) {
+    if (!isBlacklistRole && res.count < g.thresholds.roleDeleteLimit) {
       return { triggered: false, count: res.count };
     }
 
     const punish = await this.punishmentEngine.punishExecutor(guild, executorId, {
       module: "ANTI_NUKE",
-      reason: isQuarantineRole
-        ? "Defender KARANTINA rolunu silme girisimi"
+      reason: isBlacklistRole
+        ? "Defender BLACKLIST rolunu silme girisimi"
         : `Toplu rol silme saldirisi (${res.count} rol)`,
     });
 
     const restoredNames = [];
-    if (g.modules.autoRestore || isQuarantineRole) {
+    if (g.modules.autoRestore || isBlacklistRole) {
       const seen = new Set();
       for (const item of res.entries) {
         const rObj = item.meta?.role;
@@ -329,8 +329,8 @@ class AntiNukeEngine {
         );
         if (recreated) {
           restoredNames.push(recreated.name);
-          if (rObj.id === g.quarantineRoleId) {
-            this.store.setQuarantineRole(guild.id, recreated.id);
+          if (rObj.id === g.blacklistRoleId) {
+            this.store.setBlacklistRole(guild.id, recreated.id);
           }
         }
       }
@@ -341,8 +341,8 @@ class AntiNukeEngine {
     await this.punishmentEngine.logIncident(guild, {
       module: "ANTI_NUKE",
       severity: "CRITICAL",
-      action: isQuarantineRole
-        ? "Karantina Rolü Silme Girişimi"
+      action: isBlacklistRole
+        ? "Blacklist Rolü Silme Girişimi"
         : "Toplu Rol Silme (Role Nuke)",
       executorId,
       target: role.name,
@@ -443,9 +443,9 @@ class AntiNukeEngine {
     );
 
     const g = this.store.getGuild(guild.id);
-    const isQuarantineTamper = g.quarantineRoleId === newRole.id;
+    const isBlacklistTamper = g.blacklistRoleId === newRole.id;
 
-    if (addedDangerous.length === 0 && !isQuarantineTamper) {
+    if (addedDangerous.length === 0 && !isBlacklistTamper) {
       return { triggered: false };
     }
 
@@ -463,7 +463,7 @@ class AntiNukeEngine {
     }
 
     let reverted = false;
-    if (g.modules.autoRestore || isQuarantineTamper) {
+    if (g.modules.autoRestore || isBlacklistTamper) {
       reverted = await this.snapshotManager.revertRolePermissions(
         guild,
         newRole,
@@ -473,23 +473,23 @@ class AntiNukeEngine {
 
     const punish = await this.punishmentEngine.punishExecutor(guild, executorId, {
       module: "ANTI_NUKE",
-      reason: isQuarantineTamper
-        ? "Karantina rolunun izinlerini degistirme girisimi"
+      reason: isBlacklistTamper
+        ? "Blacklist rolunun izinlerini degistirme girisimi"
         : `Yetkisiz kritik rol izni yukseltmesi (${addedDangerous.join(", ")})`,
     });
 
     await this.punishmentEngine.logIncident(guild, {
       module: "ANTI_NUKE",
       severity: "CRITICAL",
-      action: isQuarantineTamper
-        ? "Karantina Rolü Kurcalama"
+      action: isBlacklistTamper
+        ? "Blacklist Rolü Kurcalama"
         : "Kritik Rol Yetki Yükseltmesi",
       executorId,
       target: `${newRole.name} (${newRole.id})`,
       details:
         addedDangerous.length > 0
           ? `Eklenen tehlikeli izinler: ${addedDangerous.join(", ")}`
-          : "Karantina rolü izinleri yetkisiz değiştirildi.",
+          : "Blacklist rolü izinleri yetkisiz değiştirildi.",
       punishment: punish.action,
       restored: reverted ? "Rol izinleri eski haline geri alındı." : null,
     });

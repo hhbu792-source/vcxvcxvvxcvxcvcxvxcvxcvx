@@ -1,0 +1,19 @@
+{
+  "name": "discord-defender-bot",
+  "version": "1.0.0",
+  "description": "Gelistirilmis Discord Defender (Guard) Sistemi - Anti-Nuke, Anti-Raid, Chat Defense, Oto-Yedek/Geri Yukleme, Karantina ve Acil Kilit",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deployCommands.js",
+    "test": "node tests/runTests.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.7"
+  }
+}

@@ -1,0 +1,690 @@
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const {
+  AuditLogEvent,
+  ChannelType,
+  PermissionFlagsBits,
+} = require("discord.js");
+
+const { DefenderEngine } = require("../src/defender/defenderEngine");
+const {
+  detectSecretLeak,
+  detectPhishing,
+  detectExternalInvite,
+} = require("../src/defender/chatDefense");
+const { buildCommands } = require("../src/commands");
+
+class MockCollection extends Map {
+  find(fn) {
+    for (const v of this.values()) {
+      if (fn(v)) return v;
+    }
+    return undefined;
+  }
+}
+
+function makeBitfield(bits = 0n) {
+  let bf = BigInt(bits);
+  return {
+    get bitfield() {
+      return bf;
+    },
+    set bitfield(v) {
+      bf = BigInt(v);
+    },
+    has(flag) {
+      return (bf & BigInt(flag)) === BigInt(flag);
+    },
+  };
+}
+
+function createMockGuild() {
+  let seq = 1000;
+  const channelsCache = new MockCollection();
+  const rolesCache = new MockCollection();
+  const membersCache = new MockCollection();
+  const auditEntries = [];
+  const bannedIds = [];
+
+  const everyoneRole = {
+    id: "everyone-1",
+    name: "@everyone",
+    color: 0,
+    hoist: false,
+    mentionable: false,
+    managed: false,
+    position: 0,
+    rawPosition: 0,
+    permissions: makeBitfield(0n),
+  };
+  rolesCache.set(everyoneRole.id, everyoneRole);
+
+  const botTopRole = {
+    id: "role-bot-top",
+    name: "Defender",
+    color: 0,
+    hoist: false,
+    mentionable: false,
+    managed: true,
+    position: 100,
+    rawPosition: 100,
+    permissions: makeBitfield(PermissionFlagsBits.Administrator),
+  };
+  rolesCache.set(botTopRole.id, botTopRole);
+
+  const guild = {
+    id: "guild-def-1",
+    name: "Backrooms Ana Sunucu",
+    ownerId: "owner-1",
+    verificationLevel: 2,
+    vanityURLCode: "backrooms-tr",
+    _auditEntries: auditEntries,
+    _bannedIds: bannedIds,
+    roles: {
+      everyone: everyoneRole,
+      cache: rolesCache,
+      async create(opts) {
+        const id = `role-${++seq}`;
+        const role = {
+          id,
+          guild,
+          name: opts.name,
+          color: opts.color || 0,
+          hoist: Boolean(opts.hoist),
+          mentionable: Boolean(opts.mentionable),
+          managed: false,
+          position: opts.position ?? 10,
+          rawPosition: opts.position ?? 10,
+          permissions: makeBitfield(
+            Array.isArray(opts.permissions)
+              ? opts.permissions.reduce((a, b) => a | BigInt(b), 0n)
+              : BigInt(opts.permissions || 0n)
+          ),
+          deleted: false,
+          async setPermissions(bits) {
+            role.permissions = makeBitfield(bits);
+            return role;
+          },
+          async delete() {
+            role.deleted = true;
+            rolesCache.delete(role.id);
+          },
+        };
+        rolesCache.set(id, role);
+        return role;
+      },
+    },
+    channels: {
+      cache: channelsCache,
+      async create(opts) {
+        const id = `ch-${++seq}`;
+        const owCache = new MockCollection();
+        for (const ow of opts.permissionOverwrites || []) {
+          owCache.set(ow.id, {
+            id: ow.id,
+            type: ow.type ?? 0,
+            allow: makeBitfield(
+              Array.isArray(ow.allow)
+                ? ow.allow.reduce((a, b) => a | BigInt(b), 0n)
+                : BigInt(ow.allow || 0n)
+            ),
+            deny: makeBitfield(
+              Array.isArray(ow.deny)
+                ? ow.deny.reduce((a, b) => a | BigInt(b), 0n)
+                : BigInt(ow.deny || 0n)
+            ),
+          });
+        }
+        const hooks = new MockCollection();
+        const channel = {
+          id,
+          guild,
+          name: opts.name,
+          type: opts.type ?? ChannelType.GuildText,
+          parentId: opts.parent || null,
+          parent: opts.parent ? channelsCache.get(opts.parent) || null : null,
+          topic: opts.topic || null,
+          rawPosition: 0,
+          rateLimitPerUser: opts.rateLimitPerUser || 0,
+          nsfw: Boolean(opts.nsfw),
+          deleted: false,
+          _sent: [],
+          _hooks: hooks,
+          permissionOverwrites: {
+            cache: owCache,
+            async edit(targetId, patch) {
+              let cur = owCache.get(targetId);
+              if (!cur) {
+                cur = {
+                  id: targetId,
+                  type: 0,
+                  allow: makeBitfield(0n),
+                  deny: makeBitfield(0n),
+                };
+                owCache.set(targetId, cur);
+              }
+              for (const [permKey, val] of Object.entries(patch)) {
+                const bit = PermissionFlagsBits[permKey];
+                if (!bit) continue;
+                if (val === true) {
+                  cur.allow.bitfield |= bit;
+                  cur.deny.bitfield &= ~bit;
+                } else if (val === false) {
+                  cur.deny.bitfield |= bit;
+                  cur.allow.bitfield &= ~bit;
+                } else if (val === null) {
+                  cur.allow.bitfield &= ~bit;
+                  cur.deny.bitfield &= ~bit;
+                }
+              }
+            },
+          },
+          async send(payload) {
+            const m = {
+              id: `msg-${++seq}`,
+              payload,
+              deleted: false,
+              async delete() {
+                m.deleted = true;
+              },
+            };
+            channel._sent.push(payload);
+            return m;
+          },
+          async setPosition(pos) {
+            channel.rawPosition = pos;
+          },
+          async fetchWebhooks() {
+            return hooks;
+          },
+          async delete() {
+            channel.deleted = true;
+            channelsCache.delete(channel.id);
+          },
+        };
+        channelsCache.set(id, channel);
+        return channel;
+      },
+    },
+    members: {
+      me: {
+        id: "bot-self-1",
+        roles: { highest: botTopRole },
+      },
+      cache: membersCache,
+      async fetch(id) {
+        return membersCache.get(id) || null;
+      },
+      async ban(id) {
+        bannedIds.push(id);
+        membersCache.delete(id);
+      },
+    },
+    async edit(patch) {
+      if (patch.name) guild.name = patch.name;
+      if (patch.verificationLevel !== undefined) {
+        guild.verificationLevel = patch.verificationLevel;
+      }
+      return guild;
+    },
+    async fetchAuditLogs({ type }) {
+      const col = new MockCollection();
+      const matching = auditEntries
+        .filter((e) => e.action === type)
+        .reverse();
+      for (const e of matching) col.set(e.id, e);
+      return { entries: col };
+    },
+  };
+
+  function addAudit(action, executorId, targetId) {
+    auditEntries.push({
+      id: `audit-${++seq}`,
+      action,
+      executorId,
+      targetId,
+      createdTimestamp: Date.now(),
+    });
+  }
+
+  function addMember({
+    id,
+    username,
+    roleList = [],
+    bot = false,
+    createdTimestamp = Date.now() - 30 * 24 * 60 * 60 * 1000,
+    avatar = "hash123",
+    canMentionEveryone = false,
+  }) {
+    const rCache = new MockCollection();
+    rCache.set(everyoneRole.id, everyoneRole);
+    for (const r of roleList) rCache.set(r.id, r);
+
+    const member = {
+      id,
+      guild,
+      user: {
+        id,
+        username,
+        tag: `${username}#0001`,
+        bot,
+        createdTimestamp,
+        avatar,
+      },
+      kicked: false,
+      timeoutMs: null,
+      permissions: makeBitfield(
+        canMentionEveryone ? PermissionFlagsBits.MentionEveryone : 0n
+      ),
+      roles: {
+        cache: rCache,
+        get highest() {
+          let top = everyoneRole;
+          for (const r of rCache.values()) {
+            if ((r.position ?? 0) > (top.position ?? 0)) top = r;
+          }
+          return top;
+        },
+        async add(ids) {
+          const arr = Array.isArray(ids) ? ids : [ids];
+          for (const rid of arr) {
+            const r = rolesCache.get(rid);
+            if (r) rCache.set(rid, r);
+          }
+        },
+        async remove(ids) {
+          const arr = Array.isArray(ids) ? ids : [ids];
+          for (const rid of arr) rCache.delete(rid);
+        },
+      },
+      async timeout(ms) {
+        member.timeoutMs = ms;
+      },
+      async kick() {
+        member.kicked = true;
+        membersCache.delete(member.id);
+      },
+    };
+    membersCache.set(id, member);
+    return member;
+  }
+
+  return { guild, addAudit, addMember };
+}
+
+function createChatMsg(channel, member, content, { userMentions = 0, roleMentions = 0 } = {}) {
+  const uMentions = new MockCollection();
+  for (let i = 0; i < userMentions; i++) uMentions.set(`u-${i}`, { id: `u-${i}` });
+  const rMentions = new MockCollection();
+  for (let i = 0; i < roleMentions; i++) rMentions.set(`r-${i}`, { id: `r-${i}` });
+
+  const msg = {
+    id: `m-${Math.random().toString(36).slice(2, 10)}`,
+    guild: channel.guild,
+    channel,
+    member,
+    author: member.user,
+    content,
+    deletable: true,
+    deleted: false,
+    mentions: { users: uMentions, roles: rMentions },
+    async delete() {
+      msg.deleted = true;
+    },
+  };
+  return msg;
+}
+
+async function runTests() {
+  console.log("=== Discord Defender System Test Suite ===");
+
+  // 0. Ensure ZERO emojis in all src/ files
+  const srcRoot = path.join(__dirname, "..", "src");
+  const emojiRegex = /[\p{Extended_Pictographic}\u2139\u23F0-\u23FF\u2600-\u27BF]/u;
+  function walk(dir) {
+    for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, item.name);
+      if (item.isDirectory()) walk(full);
+      else if (item.name.endsWith(".js")) {
+        const txt = fs.readFileSync(full, "utf-8");
+        const m = txt.match(emojiRegex);
+        assert.strictEqual(m, null, `Emoji found in ${full}: ${m ? m[0] : ""}`);
+      }
+    }
+  }
+  walk(srcRoot);
+  console.log("[OK] Emoji kontrolu: src/ altinda hicbir emoji yok.");
+
+  // 1. Slash command structure check
+  const cmds = buildCommands();
+  assert.strictEqual(cmds.length, 1);
+  assert.strictEqual(cmds[0].name, "defender");
+  assert(cmds[0].options.length >= 12);
+  console.log(`[OK] Slash komutlari: /defender (${cmds[0].options.length} alt komut) dogrulandi.`);
+
+  // 2. Setup mock guild & DefenderEngine (in-memory, 0ms audit delay)
+  const { guild, addAudit, addMember } = createMockGuild();
+  const defender = new DefenderEngine({
+    persist: false,
+    auditLogDelayMs: 0,
+    warnNoticeMs: 0,
+  });
+
+  const logCh = await defender.punishmentEngine.ensureLogChannel(guild);
+  const qRole = await defender.punishmentEngine.ensureQuarantineRole(guild);
+  const modRole = await guild.roles.create({
+    name: "Moderator",
+    color: 0x3498db,
+    permissions: PermissionFlagsBits.ManageMessages,
+    position: 20,
+  });
+  const adminRole = await guild.roles.create({
+    name: "Admin",
+    color: 0xe74c3c,
+    permissions: PermissionFlagsBits.Administrator,
+    position: 40,
+  });
+  const ch1 = await guild.channels.create({
+    name: "sohbet",
+    type: ChannelType.GuildText,
+    topic: "Genel sohbet",
+  });
+  const ch2 = await guild.channels.create({
+    name: "duyurular",
+    type: ChannelType.GuildText,
+    topic: "Sunucu duyurulari",
+  });
+
+  // Capture baseline snapshot
+  const snap = defender.snapshotManager.captureGuild(guild);
+  assert(Object.keys(snap.channels).length >= 3);
+  assert(Object.keys(snap.roles).length >= 4);
+
+  // 3. Tiered Whitelist Scope test
+  const scopedMod = addMember({
+    id: "mod-scoped",
+    username: "scopedmod",
+    roleList: [modRole],
+  });
+  defender.store.addWhitelist(guild.id, "users", scopedMod.id, ["chatDefense"]);
+  assert.strictEqual(
+    defender.store.isWhitelisted(guild, scopedMod, "chatDefense"),
+    true
+  );
+  assert.strictEqual(
+    defender.store.isWhitelisted(guild, scopedMod, "antiNuke"),
+    false
+  );
+  assert.strictEqual(
+    defender.store.isWhitelisted(guild, guild.ownerId, "antiNuke"),
+    true
+  );
+  console.log("[OK] Kademeli Whitelist: Kapsam bazli muafiyet ve sunucu sahibi korumasi dogrulandi.");
+
+  // 4. Anti-Nuke: Channel Delete Flood -> Quarantine Attacker + Auto-Restore BOTH deleted channels!
+  const attacker = addMember({
+    id: "nuker-1",
+    username: "nuker",
+    roleList: [modRole],
+  });
+  await ch1.delete();
+  addAudit(AuditLogEvent.ChannelDelete, attacker.id, ch1.id);
+  const d1 = await defender.antiNuke.onChannelDelete(ch1);
+  assert.strictEqual(d1.triggered, false);
+
+  await ch2.delete();
+  addAudit(AuditLogEvent.ChannelDelete, attacker.id, ch2.id);
+  const d2 = await defender.antiNuke.onChannelDelete(ch2);
+  assert.strictEqual(d2.triggered, true);
+  assert.strictEqual(d2.punish.action, "quarantine");
+  assert.strictEqual(attacker.roles.cache.has(qRole.id), true);
+  assert.strictEqual(attacker.roles.cache.has(modRole.id), false);
+  assert.strictEqual(d2.restoredNames.length, 2);
+  assert(guild.channels.cache.find((c) => c.name === "sohbet"));
+  assert(guild.channels.cache.find((c) => c.name === "duyurular"));
+  console.log("[OK] Anti-Nuke Kanal Silme: Saldirgan karantinaya alindi, silinen 2 kanal oto geri yuklendi.");
+
+  // 5. Quarantine Vault Restore test (unquarantine gives back exact saved roles!)
+  const unqRes = await defender.punishmentEngine.unquarantineMember(
+    guild,
+    attacker,
+    "Owner"
+  );
+  assert.strictEqual(unqRes.ok, true);
+  assert.strictEqual(unqRes.restoredCount, 1);
+  assert.strictEqual(attacker.roles.cache.has(modRole.id), true);
+  assert.strictEqual(attacker.roles.cache.has(qRole.id), false);
+  assert.strictEqual(attacker.timeoutMs, null);
+  console.log("[OK] Karantina Kasasi: Karantina kaldirilinca saklanan eski roller geri verildi.");
+
+  // 6. Anti-Nuke: INSTANT Dangerous Role Permission Escalation -> Reverts permissions + Punishes!
+  const escalater = addMember({
+    id: "nuker-2",
+    username: "escalater",
+    roleList: [modRole],
+  });
+  const oldModSnapshot = { permissions: makeBitfield(PermissionFlagsBits.ManageMessages) };
+  modRole.permissions = makeBitfield(
+    PermissionFlagsBits.ManageMessages | PermissionFlagsBits.Administrator
+  );
+  addAudit(AuditLogEvent.RoleUpdate, escalater.id, modRole.id);
+  const escRes = await defender.antiNuke.onRoleUpdate(oldModSnapshot, modRole);
+  assert.strictEqual(escRes.triggered, true);
+  assert.strictEqual(escRes.reverted, true);
+  assert.strictEqual(
+    modRole.permissions.has(PermissionFlagsBits.Administrator),
+    false
+  );
+  assert.strictEqual(escalater.roles.cache.has(qRole.id), true);
+  console.log("[OK] Anti-Nuke Yetki Yukseltme: Rol izni aninda geri alindi ve yetkisiz kisi karantinaya alindi.");
+
+  // 7. Anti-Nuke: Unauthorized Dangerous Role Grant to Member -> Strips role + Punishes!
+  const granter = addMember({
+    id: "nuker-3",
+    username: "granter",
+    roleList: [modRole],
+  });
+  const targetUser = addMember({ id: "victim-1", username: "victim" });
+  const oldTargetRoles = new MockCollection(targetUser.roles.cache);
+  await targetUser.roles.add(adminRole.id);
+  addAudit(AuditLogEvent.MemberRoleUpdate, granter.id, targetUser.id);
+  const grantRes = await defender.antiNuke.onGuildMemberUpdate(
+    { id: targetUser.id, guild, roles: { cache: oldTargetRoles } },
+    targetUser
+  );
+  assert.strictEqual(grantRes.triggered, true);
+  assert.strictEqual(grantRes.stripped, true);
+  assert.strictEqual(targetUser.roles.cache.has(adminRole.id), false);
+  assert.strictEqual(granter.roles.cache.has(qRole.id), true);
+  console.log("[OK] Anti-Nuke Kritik Rol Atama: Verilen admin rolu aninda geri alindi.");
+
+  // 8. Anti-Nuke: Guild Update Tamper -> Reverts server name + Punishes!
+  const renamer = addMember({ id: "nuker-4", username: "renamer" });
+  const oldGuildSnap = { name: guild.name, verificationLevel: guild.verificationLevel };
+  guild.name = "HACKED SERVER";
+  addAudit(AuditLogEvent.GuildUpdate, renamer.id, guild.id);
+  const gUpdRes = await defender.antiNuke.onGuildUpdate(oldGuildSnap, guild);
+  assert.strictEqual(gUpdRes.triggered, true);
+  assert.strictEqual(gUpdRes.reverted, true);
+  assert.strictEqual(guild.name, "Backrooms Ana Sunucu");
+  console.log("[OK] Anti-Nuke Sunucu Ayari: Yetkisiz isim degisikligi aninda geri alindi.");
+
+  // 9. Anti-Bot: Unapproved Rogue Bot Injection -> Bot Kicked + Inviter Punished!
+  const inviter = addMember({ id: "nuker-5", username: "botadder" });
+  const rogueBot = addMember({ id: "rogue-bot-1", username: "NukeBot", bot: true });
+  addAudit(AuditLogEvent.BotAdd, inviter.id, rogueBot.id);
+  const botRes = await defender.antiNuke.onBotAdd(rogueBot);
+  assert.strictEqual(botRes.triggered, true);
+  assert.strictEqual(botRes.botRemoved, true);
+  assert.strictEqual(rogueBot.kicked, true);
+  assert.strictEqual(inviter.roles.cache.has(qRole.id), true);
+  console.log("[OK] Anti-Bot: Onaysiz bot atildi ve ekleyen kisi karantinaya alindi.");
+
+  // 10. Anti-Webhook: Unauthorized Webhook Creation -> Webhook Deleted + Creator Punished!
+  const hookCreator = addMember({ id: "nuker-6", username: "hooker" });
+  const liveSohbet = guild.channels.cache.find((c) => c.name === "sohbet");
+  let hookDeleted = false;
+  liveSohbet._hooks.set("wh-1", {
+    id: "wh-1",
+    owner: { id: hookCreator.id },
+    async delete() {
+      hookDeleted = true;
+    },
+  });
+  addAudit(AuditLogEvent.WebhookCreate, hookCreator.id, "wh-1");
+  const whRes = await defender.antiNuke.onWebhooksUpdate(liveSohbet);
+  assert.strictEqual(whRes.triggered, true);
+  assert.strictEqual(whRes.deletedHooks, 1);
+  assert.strictEqual(hookDeleted, true);
+  assert.strictEqual(hookCreator.roles.cache.has(qRole.id), true);
+  console.log("[OK] Anti-Webhook: Yetkisiz webhook silindi ve olusturan karantinaya alindi.");
+
+  // 11. Anti-Raid & Alt-Shield: Suspicious brand-new account + Join Velocity Wave + Auto-Lockdown!
+  const suspiciousAlt = addMember({
+    id: "alt-1",
+    username: "freshalt99",
+    createdTimestamp: Date.now() - 10 * 60 * 1000, // 10 min old
+    avatar: null, // default avatar -> score = 55 + 20 = 75 >= 65
+  });
+  const altRes = await defender.antiRaid.onGuildMemberAdd(suspiciousAlt);
+  assert.strictEqual(altRes.triggered, true);
+  assert.strictEqual(altRes.type, "SUSPICIOUS_ACCOUNT");
+  assert(altRes.risk.score >= 65);
+  assert.strictEqual(suspiciousAlt.roles.cache.has(qRole.id), true);
+
+  // Simulate 5 rapid raid joins (bringing total in 12s window to 6 -> triggers Raid Mode + Auto-Lockdown!)
+  let raidTrigger = null;
+  for (let i = 1; i <= 5; i++) {
+    const rMem = addMember({
+      id: `raider-${i}`,
+      username: `raidwave_${i}`,
+      createdTimestamp: Date.now() - 60 * 24 * 60 * 60 * 1000,
+    });
+    const rr = await defender.antiRaid.onGuildMemberAdd(rMem);
+    if (rr.type === "RAID_BURST") raidTrigger = rr;
+  }
+  assert(raidTrigger && raidTrigger.raidActivated === true);
+  assert.strictEqual(defender.antiRaid.isRaidModeActive(guild.id), true);
+  assert.strictEqual(defender.store.getGuild(guild.id).lockdown.active, true);
+  assert.strictEqual(
+    liveSohbet.permissionOverwrites.cache
+      .get(guild.roles.everyone.id)
+      .deny.has(PermissionFlagsBits.SendMessages),
+    true
+  );
+
+  // Lift lockdown -> restores original channel permissions!
+  defender.antiRaid.clearRaidMode(guild.id);
+  const unlockRes = await defender.punishmentEngine.disableLockdown(guild, "Owner");
+  assert.strictEqual(unlockRes.ok, true);
+  assert.strictEqual(defender.store.getGuild(guild.id).lockdown.active, false);
+  assert.strictEqual(
+    liveSohbet.permissionOverwrites.cache
+      .get(guild.roles.everyone.id)
+      .deny.has(PermissionFlagsBits.SendMessages),
+    false
+  );
+  console.log("[OK] Anti-Raid & Alt-Shield: Supheli hesap, raid dalgasi, oto-kilit ve kilit kaldirma dogrulandi.");
+
+  // 12. Chat Defense: Token Leak, Disguised Phishing, Invite, Mass Mention, Burst Spam, Escalation!
+  // 12a. Pure detector unit checks
+  assert(
+    detectSecretLeak(
+      "tokenim: MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0.AbCdEf.1234567890abcdef1234567890abcdef"
+    )
+  );
+  assert(
+    detectSecretLeak(
+      "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz12345"
+    )
+  );
+  assert(detectPhishing("[https://discord.com/gift](https://evil-stealer.xyz/claim)"));
+  assert(detectPhishing("bedava nitro https://dlscord.xyz/gift"));
+  assert(detectPhishing("giris yap http://45.33.12.9/login"));
+  assert.strictEqual(detectPhishing("https://discord.com/channels/1/2"), null);
+  assert(detectExternalInvite("gelin discord.gg/baskasunucu", guild));
+  assert(detectExternalInvite("gelin discord . gg / gizlidavet", guild));
+  assert.strictEqual(
+    detectExternalInvite("bizim sunucu discord.gg/backrooms-tr", guild),
+    null
+  );
+
+  // 12b. Token leak deletes even for whitelisted users!
+  const leakMsg = createChatMsg(
+    liveSohbet,
+    scopedMod,
+    "yanlislikla attim https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz12345"
+  );
+  const leakRes = await defender.chatDefense.onMessageCreate(leakMsg);
+  assert.strictEqual(leakRes.blocked, true);
+  assert.strictEqual(leakRes.module, "ANTI_TOKEN_LEAK");
+  assert.strictEqual(leakMsg.deleted, true);
+
+  // 12c. Phishing + Invite + Escalation Ladder -> reaches Strike 4 -> Auto-Quarantine!
+  const spammer = addMember({ id: "spammer-1", username: "spammer" });
+  // Phishing gives 3 strikes immediately -> timeout 10m!
+  const phishMsg = createChatMsg(
+    liveSohbet,
+    spammer,
+    "bedava nitro al [https://discord.com](https://fake-nitro.ru/gift)"
+  );
+  const phishRes = await defender.chatDefense.onMessageCreate(phishMsg);
+  assert.strictEqual(phishRes.blocked, true);
+  assert.strictEqual(phishRes.strikes, 3);
+  assert.strictEqual(phishRes.actionTaken, "timeout_10m");
+  assert.strictEqual(phishMsg.deleted, true);
+
+  // Next offense (invite, +1 strike -> 4 total) -> Auto-Quarantine!
+  const invMsg = createChatMsg(liveSohbet, spammer, "gel discord.gg/reklam123");
+  const invRes = await defender.chatDefense.onMessageCreate(invMsg);
+  assert.strictEqual(invRes.blocked, true);
+  assert.strictEqual(invRes.strikes, 4);
+  assert.strictEqual(invRes.actionTaken, "quarantine");
+  assert.strictEqual(spammer.roles.cache.has(qRole.id), true);
+
+  // 12d. Mass Mention + Unauthorized @everyone
+  const mentioner = addMember({ id: "ment-1", username: "ment" });
+  const evMsg = createChatMsg(liveSohbet, mentioner, "@everyone bedava");
+  const evRes = await defender.chatDefense.onMessageCreate(evMsg);
+  assert.strictEqual(evRes.blocked, true);
+  assert.strictEqual(evRes.module, "ANTI_MENTION");
+
+  // 12e. Zalgo & Newline bomb & Burst spam
+  const flooder = addMember({ id: "flood-1", username: "flood" });
+  const nlMsg = createChatMsg(liveSohbet, flooder, "a\n".repeat(30));
+  const nlRes = await defender.chatDefense.onMessageCreate(nlMsg);
+  assert.strictEqual(nlRes.blocked, true);
+  assert.strictEqual(nlRes.module, "ANTI_SPAM");
+
+  // 12f. Edited message turned into phishing is caught without false-triggering burst spam
+  const editor = addMember({ id: "edit-1", username: "editor" });
+  const editedPhish = createChatMsg(
+    liveSohbet,
+    editor,
+    "tikla https://free-nitro.xyz/claim"
+  );
+  const editRes = await defender.chatDefense.onMessageCreate(editedPhish, {
+    isEdit: true,
+  });
+  assert.strictEqual(editRes.blocked, true);
+  assert.strictEqual(editRes.module, "ANTI_PHISHING");
+  console.log("[OK] Sohbet Korumasi: Token/Webhook sizintisi, maskeli phishing, davet, mention, spam ve kademeli karantina dogrulandi.");
+
+  // 13. Forensic incident logs verified
+  assert(logCh._sent.length >= 8);
+  const status = defender.getGuildStatus(guild);
+  assert(status.incidentCount >= 8);
+  for (const sent of logCh._sent) {
+    assert.strictEqual(emojiRegex.test(JSON.stringify(sent)), false);
+  }
+  console.log(`[OK] Adli Olay Kaydi: ${status.incidentCount} olay #defender-log kanalina emojisiz kaydedildi.`);
+
+  defender.shutdown();
+  console.log("\nTUM DEFENDER TESTLERI BASARIYLA GECTI.");
+}
+
+runTests().catch((err) => {
+  console.error("\nTEST HATASI:", err);
+  process.exit(1);
+});

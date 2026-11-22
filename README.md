@@ -62,7 +62,7 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
 | `/defender rp-ekle <kullanici> [adet] [not]` | Üyenin RP sayısını manuel artırır veya düzeltir |
 | `/defender istatistik` | Sunucu geneli RP sıralaması (Top 5) ve moderasyon analitiğini gösterir |
 | `/defender kurulum` | `#defender-log`, Blacklist rolü (`1573704309034586286`) ve ilk sunucu yedeğini tek tıkla kurar |
-| `/defender durum` | Tüm koruma modüllerinin canlı durumunu gösterir |
+| `/defender durum` | Tüm koruma modüllerinin, gecikme/çalışma süresinin ve uyarı eşiğinin canlı durumunu gösterir (yenile & istatistik butonlu) |
 | `/defender modul <ad> <aktif>` | İstenen koruma modülünü açar/kapatır *(Sunucu Sahibi / Whitelist Admin)* |
 | `/defender ceza <mod>` | Ceza modunu seçer (`blacklist`, `strip_roles`, `kick`, `ban`) *(Sunucu Sahibi / Whitelist Admin)* |
 | `/defender log <kanal>` | Güvenlik log kanalını ayarlar |
@@ -74,15 +74,18 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
 | `/defender blacklist <kullanici> [sebep]` | Üyeyi manuel blacklist'e alır (`1573704309034586286` rolü verilir) |
 | `/defender blacklist-kaldir <kullanici>` | Blacklist'i kaldırır ve eski rolleri geri verir |
 | `/defender yedek` | Anlık sunucu yedeği (snapshot) alır |
-| `/defender olaylar` | Son 10 güvenlik olayını listeler |
+| `/defender olaylar [modul]` | Güvenlik olaylarını modül filtresi ve sayfalama ile listeler |
 
-## Kurulum
+## Kurulum & Railway Notu
 
 1. Discord Developer Portal -> **Bot -> Privileged Gateway Intents** altında **`SERVER MEMBERS INTENT`** ve **`MESSAGE CONTENT INTENT`** seçeneklerini açın.
-2. Botu sunucuya **Administrator** yetkisiyle davet edin ve **bot rolünü sunucu rol listesinde en üste** (Sunucu Sahibi hariç tüm yetkili rollerin üstüne) taşıyın.
-3. `.env.example` dosyasını `.env` olarak kopyalayıp `DISCORD_TOKEN` değerini girin ve başlatın:
+2. Botu sunucuya **Administrator** yetkisiyle davet edin ve **bot rolünü sunucu rol listesinde en üste** (`1573704309034586286` Blacklist rolünün ve tüm yönetici rollerinin üstüne) taşıyın.
+3. Railway üzerinde sicil ve ayar kayıtlarının (`data/`) redeploy sonrasında kalıcı olması için servisinize `/app/data` yoluna bağlı bir **Volume** ekleyin (`railway.json` otomatik yeniden başlatma politikasını içerir).
+4. Yerel kurulum ve doğrulama:
    ```bash
    cp .env.example .env
    npm install
+   npm run check
+   npm test
    npm start
    ```

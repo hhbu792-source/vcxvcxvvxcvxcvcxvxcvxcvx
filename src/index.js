@@ -1,4 +1,5 @@
 const {
+  AttachmentBuilder,
   Client,
   EmbedBuilder,
   Events,
@@ -13,7 +14,7 @@ const { deployCommands } = require("./deployCommands");
 
 if (!config.token) {
   console.error(
-    "[HATA] DISCORD_TOKEN bulunamadi. .env.example dosyasini .env olarak kopyalayip bot token'inizi girin."
+    "[HATA] DISCORD_TOKEN bulunamadı. .env.example dosyasını .env olarak kopyalayıp bot token'ınızı girin."
   );
   process.exit(1);
 }
@@ -54,6 +55,15 @@ function isAdministrator(interaction) {
   );
 }
 
+function canModerateTarget(interaction, targetMember) {
+  if (!interaction.guild || !targetMember) return true;
+  if (interaction.guild.ownerId === interaction.user.id) return true;
+  if (targetMember.id === interaction.guild.ownerId) return false;
+  const actorPos = interaction.member?.roles?.highest?.position ?? -1;
+  const targetPos = targetMember.roles?.highest?.position ?? -1;
+  return actorPos > targetPos;
+}
+
 /**
  * High-security actions (whitelist edits, toggling modules, changing punishment mode)
  * require Server Owner OR a Whitelisted ("all") Administrator so a hijacked admin
@@ -70,12 +80,246 @@ function canModifyDefenderCore(interaction) {
   );
 }
 
+async function fetchUserLogContext(guild, targetId) {
+  const [discordUser, member, liveBan] = await Promise.all([
+    client.users.fetch(targetId).catch(() => null),
+    guild.members.fetch(targetId).catch(() => null),
+    guild.bans.fetch(targetId).catch(() => null),
+  ]);
+
+  const gDef = defender.store.getGuild(guild.id);
+  const defenderBlacklisted = Boolean(gDef.blacklistedUsers[targetId]);
+
+  return {
+    guild,
+    targetId,
+    discordUser,
+    member,
+    liveBan,
+    defenderBlacklisted,
+  };
+}
+
+async function handleUserLogButton(interaction) {
+  if (!interaction.guild) return;
+  if (!isAdministrator(interaction)) {
+    await interaction.reply({
+      content:
+        "Bu paneli sadece **Yönetici (Administrator)** yetkisine sahip kişiler kullanabilir.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const parts = String(interaction.customId || "").split(":");
+  const action = parts[1];
+  const targetId = cleanSnowflake(parts[2]);
+  if (!targetId) {
+    await interaction.reply({
+      content: "Geçersiz kullanıcı kimliği.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (action === "tab" || action === "refresh") {
+    const tab = parts[3] || "overview";
+    await interaction.deferUpdate();
+    const ctx = await fetchUserLogContext(interaction.guild, targetId);
+    const dashboard = defender.userLogManager.buildUserLogDashboard({
+      ...ctx,
+      tab,
+    });
+    await interaction.editReply(dashboard);
+    return;
+  }
+
+  if (action === "warn") {
+    if (targetId === interaction.user.id) {
+      await interaction.reply({
+        content: "Kendinize uyarı veremezsiniz.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (targetId === interaction.guild.ownerId) {
+      await interaction.reply({
+        content: "Sunucu sahibine uyarı verilemez.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const modal = defender.userLogManager.buildQuickWarnModal(targetId);
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "note") {
+    const modal = defender.userLogManager.buildQuickNoteModal(targetId);
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "export") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const ctx = await fetchUserLogContext(interaction.guild, targetId);
+    const reportText = defender.userLogManager.buildUserLogReportText(ctx);
+    const file = new AttachmentBuilder(Buffer.from(reportText, "utf-8"), {
+      name: `user-log-${targetId}.txt`,
+    });
+    await interaction.editReply({
+      content: `<@${targetId}> (\`${targetId}\`) için eksiksiz kullanıcı sicil raporu hazırlandı.`,
+      files: [file],
+    });
+  }
+}
+
+async function handleUserLogModal(interaction) {
+  if (!interaction.guild) return;
+  if (!isAdministrator(interaction)) {
+    await interaction.reply({
+      content:
+        "Bu işlemi sadece **Yönetici (Administrator)** yetkisine sahip kişiler yapabilir.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const parts = String(interaction.customId || "").split(":");
+  const modalKind = parts[2];
+  const targetId = cleanSnowflake(parts[3]);
+  if (!targetId) {
+    await interaction.reply({
+      content: "Geçersiz kullanıcı kimliği.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const guild = interaction.guild;
+
+  if (modalKind === "warn") {
+    const reason = interaction.fields.getTextInputValue("warn_reason").trim();
+    const [discordUser, member] = await Promise.all([
+      client.users.fetch(targetId).catch(() => null),
+      guild.members.fetch(targetId).catch(() => null),
+    ]);
+
+    if (discordUser?.bot) {
+      await interaction.reply({
+        content: "Bot hesaplarına uyarı verilemez.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (targetId === interaction.user.id || targetId === guild.ownerId) {
+      await interaction.reply({
+        content: "Bu kullanıcıya uyarı verilemez.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (member && !canModerateTarget(interaction, member)) {
+      await interaction.reply({
+        content:
+          "Rol hiyerarşisi nedeniyle sizden üst veya eşit yetkideki bir üyeye uyarı veremezsiniz.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const targetObj = discordUser || { id: targetId, tag: targetId };
+    const fromMsg =
+      typeof interaction.isFromMessage === "function" &&
+      interaction.isFromMessage();
+
+    if (fromMsg) {
+      await interaction.deferUpdate();
+    } else {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+
+    const res = await defender.userLogManager.warnUser(
+      guild,
+      targetObj,
+      reason,
+      interaction.user
+    );
+    const confirmEmbed = defender.userLogManager.buildWarnConfirmEmbed({
+      guild,
+      targetUser: targetObj,
+      entry: res.entry,
+      totalWarnings: res.totalWarnings,
+      dmSent: res.dmSent,
+      moderator: interaction.user,
+    });
+
+    if (fromMsg) {
+      const ctx = await fetchUserLogContext(guild, targetId);
+      const dashboard = defender.userLogManager.buildUserLogDashboard({
+        ...ctx,
+        tab: "warnings",
+      });
+      await interaction.editReply(dashboard);
+      await interaction.followUp({
+        embeds: [confirmEmbed],
+        flags: MessageFlags.Ephemeral,
+      });
+    } else {
+      await interaction.editReply({ embeds: [confirmEmbed] });
+    }
+    return;
+  }
+
+  if (modalKind === "note") {
+    const noteText = interaction.fields.getTextInputValue("staff_note").trim();
+    const discordUser = await client.users.fetch(targetId).catch(() => null);
+    const targetObj = discordUser || { id: targetId, tag: targetId };
+
+    const fromMsg =
+      typeof interaction.isFromMessage === "function" &&
+      interaction.isFromMessage();
+
+    if (fromMsg) {
+      await interaction.deferUpdate();
+    } else {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+
+    const res = await defender.userLogManager.addStaffNote(
+      guild,
+      targetObj,
+      noteText,
+      interaction.user
+    );
+
+    if (fromMsg) {
+      const ctx = await fetchUserLogContext(guild, targetId);
+      const dashboard = defender.userLogManager.buildUserLogDashboard({
+        ...ctx,
+        tab: "notes",
+      });
+      await interaction.editReply(dashboard);
+      await interaction.followUp({
+        content: `<@${targetId}> siciline yetkili notu eklendi (\`${res.entry.id}\`). Toplam not: **${res.totalNotes}**.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    } else {
+      await interaction.editReply({
+        content: `<@${targetId}> siciline yetkili notu eklendi (\`${res.entry.id}\`). Toplam not: **${res.totalNotes}**.`,
+      });
+    }
+  }
+}
+
 client.once(Events.ClientReady, async (readyClient) => {
-  console.log(`[DEFENDER] ${readyClient.user.tag} aktif.`);
   const snapCount = defender.initializeGuilds(readyClient);
-  console.log(
-    `[DEFENDER] ${snapCount} sunucu icin koruma ve yapi yedegi baslatildi.`
-  );
+  console.log("========================================");
+  console.log(`[DEFENDER] Bot aktif: ${readyClient.user.tag}`);
+  console.log(`[DEFENDER] Korunan sunucu sayisi : ${snapCount}`);
+  console.log(`[DEFENDER] Blacklist Rol ID      : ${config.blacklistRoleId}`);
+  console.log(`[DEFENDER] RP Takip Kategorisi   : ${config.rpCategoryName}`);
+  console.log("========================================");
 
   try {
     const res = await deployCommands({
@@ -93,147 +337,153 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 });
 
+client.on(Events.Error, (err) => {
+  console.error("[DISCORD CLIENT HATASI]", err.message);
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (
-    interaction.commandName !== "defender" &&
-    interaction.commandName !== "user-log"
-  ) {
-    return;
-  }
+  try {
+    if (interaction.isButton() && interaction.customId.startsWith("ulog:")) {
+      await handleUserLogButton(interaction);
+      return;
+    }
 
-  if (!interaction.guild) {
-    await interaction.reply({
-      content: "Bu komut sadece sunucu icinde kullanilabilir.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
+    if (
+      interaction.isModalSubmit() &&
+      interaction.customId.startsWith("ulog:modal:")
+    ) {
+      await handleUserLogModal(interaction);
+      return;
+    }
 
-  if (!isAdministrator(interaction)) {
-    await interaction.reply({
-      content: "Bu komutu sadece Yonetici (Administrator) yetkisine sahip kisiler kullanabilir.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
+    if (!interaction.isChatInputCommand()) return;
+    if (
+      interaction.commandName !== "defender" &&
+      interaction.commandName !== "user-log"
+    ) {
+      return;
+    }
 
-  const guild = interaction.guild;
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "Bu komut sadece sunucu içinde kullanılabilir.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
 
-  if (interaction.commandName === "user-log") {
-    try {
+    if (!isAdministrator(interaction)) {
+      await interaction.reply({
+        content:
+          "Bu komutu sadece **Yönetici (Administrator)** yetkisine sahip kişiler kullanabilir.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const guild = interaction.guild;
+
+    if (interaction.commandName === "user-log") {
       const rawId = interaction.options.getString("id", true);
       const targetId = cleanSnowflake(rawId);
       if (!targetId) {
         await interaction.reply({
-          content: "Gecerli bir Discord ID'si girin (ornek: `123456789012345678`).",
+          content:
+            "Geçerli bir Discord ID'si girin (örnek: `123456789012345678`).",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const [discordUser, member, liveBan] = await Promise.all([
-        client.users.fetch(targetId).catch(() => null),
-        guild.members.fetch(targetId).catch(() => null),
-        guild.bans.fetch(targetId).catch(() => null),
-      ]);
-
-      const gDef = defender.store.getGuild(guild.id);
-      const defenderBlacklisted = Boolean(gDef.blacklistedUsers[targetId]);
-
-      const embed = defender.userLogManager.buildUserLogEmbed({
-        guild,
-        targetId,
-        discordUser,
-        member,
-        liveBan,
-        defenderBlacklisted,
+      const ctx = await fetchUserLogContext(guild, targetId);
+      const dashboard = defender.userLogManager.buildUserLogDashboard({
+        ...ctx,
+        tab: "overview",
       });
-
-      await interaction.editReply({ embeds: [embed] });
-    } catch (err) {
-      console.error("[USER-LOG KOMUT HATASI]", err);
-      const msg = "Kullanici kaydi getirilirken bir hata olustu.";
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(msg).catch(() => {});
-      } else {
-        await interaction
-          .reply({ content: msg, flags: MessageFlags.Ephemeral })
-          .catch(() => {});
-      }
+      await interaction.editReply(dashboard);
+      return;
     }
-    return;
-  }
 
-  const sub = interaction.options.getSubcommand();
+    const sub = interaction.options.getSubcommand();
 
-  const coreProtectedSubs = new Set([
-    "modul",
-    "ceza",
-    "whitelist-ekle",
-    "whitelist-cikar",
-  ]);
-  if (coreProtectedSubs.has(sub) && !canModifyDefenderCore(interaction)) {
-    await interaction.reply({
-      content:
-        "Bu kritik Defender ayarini sadece **Sunucu Sahibi** veya `all` kapsaminda whitelist'e eklenmis yoneticiler degistirebilir.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
+    const coreProtectedSubs = new Set([
+      "modul",
+      "ceza",
+      "whitelist-ekle",
+      "whitelist-cikar",
+    ]);
+    if (coreProtectedSubs.has(sub) && !canModifyDefenderCore(interaction)) {
+      await interaction.reply({
+        content:
+          "Bu kritik Defender ayarını sadece **Sunucu Sahibi** veya `all` kapsamında whitelist'e eklenmiş yöneticiler değiştirebilir.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
 
-  try {
     if (sub === "kurulum") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const logCh = await defender.punishmentEngine.ensureLogChannel(guild);
       const blRole = await defender.punishmentEngine.ensureBlacklistRole(guild);
       const snap = defender.snapshotManager.captureGuild(guild);
 
-      await interaction.editReply(
-        [
-          "Defender kurulumu tamamlandi.",
-          `Log Kanali: ${logCh}`,
-          `Blacklist Rolu: <@&${blRole.id}>`,
-          `Ilk Yedek: ${Object.keys(snap.roles).length} rol, ${Object.keys(snap.channels).length} kanal kaydedildi.`,
-          "",
-          "Not: Guvendiginiz yoneticileri `/defender whitelist-ekle` ile eklemeyi unutmayin (Sunucu Sahibi otomatik muaftir).",
-        ].join("\n")
-      );
+      const setupEmbed = new EmbedBuilder()
+        .setColor(0x2ecc71)
+        .setAuthor({ name: "Defender Güvenlik Sistemi" })
+        .setTitle("Kurulum Tamamlandı")
+        .addFields(
+          { name: "Log Kanalı", value: `${logCh}`, inline: true },
+          { name: "Blacklist Rolü", value: `<@&${blRole.id}>`, inline: true },
+          {
+            name: "İlk Sunucu Yedeği",
+            value: `${Object.keys(snap.roles).length} rol, ${Object.keys(snap.channels).length} kanal`,
+            inline: true,
+          },
+          {
+            name: "Önemli Not",
+            value:
+              "Güvendiğiniz yöneticileri `/defender whitelist-ekle` ile eklemeyi unutmayın (Sunucu Sahibi otomatik muaftır).",
+            inline: false,
+          }
+        )
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [setupEmbed] });
       return;
     }
 
     if (sub === "durum") {
       const st = defender.getGuildStatus(guild);
       const modLines = Object.entries(st.modules)
-        .map(([k, v]) => `- \`${k}\`: **${v ? "ACIK" : "KAPALI"}**`)
+        .map(([k, v]) => `- \`${k}\`: **${v ? "AÇIK" : "KAPALI"}**`)
         .join("\n");
 
       const snapText = st.snapshot
         ? `${st.snapshot.roleCount} rol, ${st.snapshot.channelCount} kanal (<t:${Math.floor(st.snapshot.capturedAt / 1000)}:R>)`
-        : "Henuz alinmadi";
+        : "Henüz alınmadı";
 
       const embed = new EmbedBuilder()
         .setColor(st.lockdownActive || st.raidModeActive ? 0xc0392b : 0x2c3e50)
-        .setTitle(`Defender Guvenlik Durumu - ${guild.name}`)
+        .setAuthor({ name: "Defender Güvenlik Motoru" })
+        .setTitle(`Canlı Güvenlik Durumu - ${guild.name}`)
         .addFields(
           {
             name: "Genel",
             value: [
-              `Sistem: **${st.enabled ? "AKTIF" : "PASIF"}**`,
+              `Sistem: **${st.enabled ? "AKTİF" : "PASİF"}**`,
               `Ceza Modu: \`${st.punishmentMode}\``,
-              `Acil Kilit: **${st.lockdownActive ? "AKTIF" : "Kapali"}**`,
-              `Raid Modu: **${st.raidModeActive ? "AKTIF" : "Normal"}**`,
+              `Acil Kilit: **${st.lockdownActive ? "AKTİF" : "Kapalı"}**`,
+              `Raid Modu: **${st.raidModeActive ? "AKTİF" : "Normal"}**`,
             ].join("\n"),
             inline: true,
           },
           {
-            name: "Kayitlar",
+            name: "Kayıtlar",
             value: [
-              `Log Kanali: ${st.logChannelId ? `<#${st.logChannelId}>` : "Ayarlanmadi"}`,
-              `Blacklist Rolu: ${st.blacklistRoleId ? `<@&${st.blacklistRoleId}>` : "Ayarlanmadi"}`,
-              `Blacklist'teki Uye: **${st.blacklistedCount}**`,
+              `Log Kanalı: ${st.logChannelId ? `<#${st.logChannelId}>` : "Ayarlanmadı"}`,
+              `Blacklist Rolü: ${st.blacklistRoleId ? `<@&${st.blacklistRoleId}>` : "Ayarlanmadı"}`,
+              `Blacklist'teki Üye: **${st.blacklistedCount}**`,
               `Toplam Olay: **${st.incidentCount}**`,
             ].join("\n"),
             inline: true,
@@ -241,18 +491,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
           {
             name: "Whitelist & Yedek",
             value: [
-              `Kullanici: ${st.whitelistCounts.users} | Rol: ${st.whitelistCounts.roles} | Bot: ${st.whitelistCounts.bots}`,
+              `Kullanıcı: ${st.whitelistCounts.users} | Rol: ${st.whitelistCounts.roles} | Bot: ${st.whitelistCounts.bots}`,
               `Son Yedek: ${snapText}`,
             ].join("\n"),
             inline: false,
           },
           {
-            name: "Koruma Modulleri",
+            name: "Koruma Modülleri",
             value: modLines,
             inline: false,
           }
         )
-        .setFooter({ text: "Defender Guvenlik Motoru" })
+        .setFooter({ text: `Defender Güvenlik Sistemi | ${guild.name}` })
         .setTimestamp();
 
       await interaction.reply({
@@ -270,14 +520,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await defender.punishmentEngine.logIncident(guild, {
         module: "CONFIG",
         severity: "INFO",
-        action: `Modul Ayari Degistirildi (${modName})`,
+        action: `Modül Ayarı Değiştirildi (${modName})`,
         executorId: interaction.user.id,
         target: modName,
-        details: `Yeni durum: ${active ? "ACIK" : "KAPALI"}`,
+        details: `Yeni durum: ${active ? "AÇIK" : "KAPALI"}`,
       });
 
       await interaction.reply({
-        content: `\`${modName}\` modulu **${active ? "ACIK" : "KAPALI"}** olarak guncellendi.`,
+        content: `\`${modName}\` modülü **${active ? "AÇIK" : "KAPALI"}** olarak güncellendi.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -290,14 +540,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await defender.punishmentEngine.logIncident(guild, {
         module: "CONFIG",
         severity: "INFO",
-        action: "Ceza Modu Degistirildi",
+        action: "Ceza Modu Değiştirildi",
         executorId: interaction.user.id,
         target: mode,
-        details: `Varsayilan ceza modu \`${mode}\` yapildi.`,
+        details: `Varsayılan ceza modu \`${mode}\` yapıldı.`,
       });
 
       await interaction.reply({
-        content: `Varsayilan ceza modu \`${mode}\` olarak ayarlandi.`,
+        content: `Varsayılan ceza modu \`${mode}\` olarak ayarlandı.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -307,7 +557,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const ch = interaction.options.getChannel("kanal", true);
       defender.store.setLogChannel(guild.id, ch.id);
       await interaction.reply({
-        content: `Guvenlik log kanali ${ch} olarak ayarlandi.`,
+        content: `Güvenlik log kanalı ${ch} olarak ayarlandı.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -321,7 +571,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (!targetId) {
         await interaction.reply({
-          content: "Gecerli bir Discord ID'si veya etiket girin.",
+          content: "Geçerli bir Discord ID'si veya etiket girin.",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -345,7 +595,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       });
 
       await interaction.reply({
-        content: `\`${targetId}\` (${category}) guvenli listeye eklendi (kapsam: \`${scope}\`).`,
+        content: `\`${targetId}\` (${category}) güvenli listeye eklendi (kapsam: \`${scope}\`).`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -358,7 +608,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (!targetId) {
         await interaction.reply({
-          content: "Gecerli bir Discord ID'si girin.",
+          content: "Geçerli bir Discord ID'si girin.",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -371,7 +621,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       );
       if (!removed) {
         await interaction.reply({
-          content: `\`${targetId}\` (${category}) guvenli listede bulunamadi.`,
+          content: `\`${targetId}\` (${category}) güvenli listede bulunamadı.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -380,14 +630,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await defender.punishmentEngine.logIncident(guild, {
         module: "WHITELIST",
         severity: "INFO",
-        action: "Whitelist Cikarma",
+        action: "Whitelist Çıkarma",
         executorId: interaction.user.id,
         target: `${category}: ${targetId}`,
-        details: "Guvenli listeden kaldirildi.",
+        details: "Güvenli listeden kaldırıldı.",
       });
 
       await interaction.reply({
-        content: `\`${targetId}\` (${category}) guvenli listeden cikarildi.`,
+        content: `\`${targetId}\` (${category}) güvenli listeden çıkarıldı.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -408,14 +658,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x2c3e50)
-        .setTitle("Defender Guvenli Liste (Whitelist)")
+        .setTitle("Defender Güvenli Liste (Whitelist)")
         .setDescription(
-          `Sunucu Sahibi (<@${guild.ownerId}>) ve Defender botu her zaman muaftir.`
+          `Sunucu Sahibi (<@${guild.ownerId}>) ve Defender botu her zaman muaftır.`
         )
         .addFields(
-          { name: "Kullanicilar", value: fmt(g.whitelist.users, "<@"), inline: false },
+          { name: "Kullanıcılar", value: fmt(g.whitelist.users, "<@"), inline: false },
           { name: "Roller", value: fmt(g.whitelist.roles, "<@&"), inline: false },
-          { name: "Onayli Botlar", value: fmt(g.whitelist.bots, "<@"), inline: false }
+          { name: "Onaylı Botlar", value: fmt(g.whitelist.bots, "<@"), inline: false }
         )
         .setTimestamp();
 
@@ -430,7 +680,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const reason =
         interaction.options.getString("sebep", false) ||
-        "Yonetici acil durum kilidi";
+        "Yönetici acil durum kilidi";
       const res = await defender.punishmentEngine.enableLockdown(
         guild,
         reason,
@@ -444,14 +694,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await defender.punishmentEngine.logIncident(guild, {
         module: "LOCKDOWN",
         severity: "HIGH",
-        action: "Acil Durum Kilidi Acildi",
+        action: "Acil Durum Kilidi Açıldı",
         executorId: interaction.user.id,
         target: `${res.lockedCount} kanal`,
         details: `Sebep: ${reason}`,
       });
 
       await interaction.editReply(
-        `Acil durum kilidi aktif edildi. ${res.lockedCount} kanal kilitlendi.`
+        `Acil durum kilidi aktif edildi. **${res.lockedCount}** kanal kilitlendi.`
       );
       return;
     }
@@ -467,15 +717,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await defender.punishmentEngine.logIncident(guild, {
         module: "LOCKDOWN",
         severity: "INFO",
-        action: "Acil Durum Kilidi & Raid Modu Kaldirildi",
+        action: "Acil Durum Kilidi & Raid Modu Kaldırıldı",
         executorId: interaction.user.id,
         target: `${res.unlockedCount} kanal`,
-        details: "Eski kanal izinleri geri yuklendi.",
+        details: "Eski kanal izinleri geri yüklendi.",
       });
 
       await interaction.editReply(
         res.ok
-          ? `Acil kilit ve raid modu kaldirildi. ${res.unlockedCount} kanalin eski izinleri geri yuklendi.`
+          ? `Acil kilit ve raid modu kaldırıldı. **${res.unlockedCount}** kanalın eski izinleri geri yüklendi.`
           : "Raid modu temizlendi (aktif kilit bulunmuyordu)."
       );
       return;
@@ -488,7 +738,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
         interaction.options.getString("sebep", false) || "Manuel blacklist";
       const member = await guild.members.fetch(user.id).catch(() => null);
       if (!member) {
-        await interaction.editReply("Kullanici sunucuda bulunamadi.");
+        await interaction.editReply("Kullanıcı sunucuda bulunamadı.");
+        return;
+      }
+      if (!canModerateTarget(interaction, member)) {
+        await interaction.editReply(
+          "Rol hiyerarşisi nedeniyle sizden üst veya eşit yetkideki bir üyeyi blacklist'e alamazsınız."
+        );
         return;
       }
       const res = await defender.punishmentEngine.blacklistMember(
@@ -500,7 +756,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       );
       if (!res.ok) {
         await interaction.editReply(
-          "Bu kullanici blacklist'e alinamadi (rol hiyerarsisi veya sunucu sahibi)."
+          "Bu kullanıcı blacklist'e alınamadı (bot rol hiyerarşisi veya sunucu sahibi)."
         );
         return;
       }
@@ -511,12 +767,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
         action: "Manuel Blacklist",
         executorId: interaction.user.id,
         target: `<@${user.id}>`,
-        details: `Sebep: ${reason} (${res.removedRolesCount} rol saklandi)`,
+        details: `Sebep: ${reason} (${res.removedRolesCount} rol saklandı)`,
         punishment: "blacklist",
       });
 
       await interaction.editReply(
-        `<@${user.id}> blacklist'e alindi (<@&${res.blacklistRoleId}> verildi, ${res.removedRolesCount} eski rol yedeklendi).`
+        `<@${user.id}> blacklist'e alındı (<@&${res.blacklistRoleId}> verildi, **${res.removedRolesCount}** eski rol yedeklendi).`
       );
       return;
     }
@@ -526,7 +782,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const user = interaction.options.getUser("kullanici", true);
       const member = await guild.members.fetch(user.id).catch(() => null);
       if (!member) {
-        await interaction.editReply("Kullanici sunucuda bulunamadi.");
+        await interaction.editReply("Kullanıcı sunucuda bulunamadı.");
         return;
       }
       const res = await defender.punishmentEngine.unblacklistMember(
@@ -539,14 +795,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await defender.punishmentEngine.logIncident(guild, {
         module: "BLACKLIST",
         severity: "INFO",
-        action: "Blacklist Kaldirildi",
+        action: "Blacklist Kaldırıldı",
         executorId: interaction.user.id,
         target: `<@${user.id}>`,
         details: `${res.restoredCount} eski rol geri verildi.`,
       });
 
       await interaction.editReply(
-        `<@${user.id}> blacklist'ten cikarildi (${res.restoredCount} eski rol geri yuklendi).`
+        `<@${user.id}> blacklist'ten çıkarıldı (**${res.restoredCount}** eski rol geri yüklendi).`
       );
       return;
     }
@@ -557,15 +813,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const reason = interaction.options.getString("sebep", true).trim();
 
       if (user.bot) {
-        await interaction.editReply("Bot hesaplarina uyari verilemez.");
+        await interaction.editReply("Bot hesaplarına uyarı verilemez.");
         return;
       }
       if (user.id === interaction.user.id) {
-        await interaction.editReply("Kendinize uyari veremezsiniz.");
+        await interaction.editReply("Kendinize uyarı veremezsiniz.");
         return;
       }
       if (user.id === guild.ownerId) {
-        await interaction.editReply("Sunucu sahibine uyari verilemez.");
+        await interaction.editReply("Sunucu sahibine uyarı verilemez.");
+        return;
+      }
+
+      const member = await guild.members.fetch(user.id).catch(() => null);
+      if (member && !canModerateTarget(interaction, member)) {
+        await interaction.editReply(
+          "Rol hiyerarşisi nedeniyle sizden üst veya eşit yetkideki bir üyeye uyarı veremezsiniz."
+        );
         return;
       }
 
@@ -576,15 +840,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
         interaction.user
       );
 
-      await interaction.editReply(
-        [
-          `<@${user.id}> kullanicisina uyari verildi.`,
-          `Uyari ID: \`${res.entry.id}\``,
-          `Sebep: ${res.entry.reason}`,
-          `Toplam Uyari: **${res.totalWarnings}**`,
-          `DM Bildirimi: **${res.dmSent ? "Gonderildi" : "Gonderilemedi (DM kapali)"}**`,
-        ].join("\n")
-      );
+      const confirmEmbed = defender.userLogManager.buildWarnConfirmEmbed({
+        guild,
+        targetUser: user,
+        entry: res.entry,
+        totalWarnings: res.totalWarnings,
+        dmSent: res.dmSent,
+        moderator: interaction.user,
+      });
+
+      await interaction.editReply({ embeds: [confirmEmbed] });
       return;
     }
 
@@ -603,14 +868,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (res.removedCount === 0) {
         await interaction.editReply(
           warningId
-            ? `<@${user.id}> kullanicisinda \`${warningId}\` kodlu bir uyari bulunamadi.`
-            : `<@${user.id}> kullanicisinin silinecek uyarisi bulunmuyor.`
+            ? `<@${user.id}> kullanıcısında \`${warningId}\` kodlu bir uyarı bulunamadı.`
+            : `<@${user.id}> kullanıcısının silinecek uyarısı bulunmuyor.`
         );
         return;
       }
 
       await interaction.editReply(
-        `<@${user.id}> kullanicisindan **${res.removedCount}** uyari silindi (\`${res.removedIds.join(", ")}\`). Kalan uyari: **${res.remainingCount}**.`
+        `<@${user.id}> kullanıcısından **${res.removedCount}** uyarı silindi (\`${res.removedIds.join(", ")}\`). Kalan aktif uyarı: **${res.remainingCount}**.`
       );
       return;
     }
@@ -629,15 +894,60 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (sub === "not-ekle") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const user = interaction.options.getUser("kullanici", true);
+      const noteText = interaction.options.getString("not", true).trim();
+
+      const res = await defender.userLogManager.addStaffNote(
+        guild,
+        user,
+        noteText,
+        interaction.user
+      );
+
+      await interaction.editReply(
+        `<@${user.id}> siciline yetkili notu kaydedildi (\`${res.entry.id}\`). Toplam not: **${res.totalNotes}**.`
+      );
+      return;
+    }
+
+    if (sub === "not-sil") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const user = interaction.options.getUser("kullanici", true);
+      const noteId = interaction.options.getString("not_id", false);
+
+      const res = await defender.userLogManager.removeStaffNote(
+        guild,
+        user.id,
+        noteId,
+        interaction.user
+      );
+
+      if (res.removedCount === 0) {
+        await interaction.editReply(
+          noteId
+            ? `<@${user.id}> kullanıcısında \`${noteId}\` kodlu bir yetkili notu bulunamadı.`
+            : `<@${user.id}> kullanıcısının silinecek yetkili notu bulunmuyor.`
+        );
+        return;
+      }
+
+      await interaction.editReply(
+        `<@${user.id}> sicilinden **${res.removedCount}** yetkili notu silindi (\`${res.removedIds.join(", ")}\`). Kalan not: **${res.remainingCount}**.`
+      );
+      return;
+    }
+
     if (sub === "rp-ekle") {
       const user = interaction.options.getUser("kullanici", true);
       const delta = interaction.options.getInteger("adet", false) ?? 1;
       const note =
-        interaction.options.getString("not", false) || "Manuel RP kaydi";
+        interaction.options.getString("not", false) || "Manuel RP kaydı";
 
       if (user.bot) {
         await interaction.reply({
-          content: "Bot hesaplarina RP kaydi eklenemez.",
+          content: "Bot hesaplarına RP kaydı eklenemez.",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -645,7 +955,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (delta === 0) {
         await interaction.reply({
-          content: "Adet 0 olamaz (ornek: 1 veya -1 girin).",
+          content: "Adet 0 olamaz (örnek: `1` veya `-1` girin).",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -661,7 +971,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const sign = delta > 0 ? `+${delta}` : String(delta);
       await interaction.reply({
-        content: `<@${user.id}> RP sayisi guncellendi (${sign}). Yeni toplam RP sayisi: **${res.totalRpCount}** (Not: ${note}).`,
+        content: `<@${user.id}> RP sayısı güncellendi (${sign}). Yeni toplam RP sayısı: **${res.totalRpCount}** (Not: ${note}).`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -670,7 +980,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (sub === "yedek") {
       const snap = defender.snapshotManager.captureGuild(guild);
       await interaction.reply({
-        content: `Sunucu yedegi alindi: **${Object.keys(snap.roles).length}** rol ve **${Object.keys(snap.channels).length}** kanal kaydedildi.`,
+        content: `Sunucu yedeği alındı: **${Object.keys(snap.roles).length}** rol ve **${Object.keys(snap.channels).length}** kanal kaydedildi.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -681,7 +991,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const recent = g.incidents.slice(-10).reverse();
       if (recent.length === 0) {
         await interaction.reply({
-          content: "Henuz kaydedilmis bir guvenlik olayi bulunmuyor.",
+          content: "Henüz kaydedilmiş bir güvenlik olayı bulunmuyor.",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -694,9 +1004,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x2c3e50)
-        .setTitle(`Son Guvenlik Olaylari (${guild.name})`)
+        .setAuthor({ name: "Defender Adli Olay Kayıtları" })
+        .setTitle(`Son Güvenlik Olayları (${guild.name})`)
         .setDescription(lines.join("\n"))
-        .setFooter({ text: `Toplam kayitli olay: ${g.incidentCounter}` })
+        .setFooter({ text: `Toplam kayıtlı olay: ${g.incidentCounter}` })
         .setTimestamp();
 
       await interaction.reply({
@@ -706,17 +1017,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
   } catch (err) {
-    console.error("[DEFENDER KOMUT HATASI]", err);
+    console.error("[DEFENDER ETKILESIM HATASI]", err);
     const msg =
-      "Komut calistirilirken hata olustu. Botun en ustte yer alan bir Yonetici rolune sahip oldugundan emin olun.";
+      "İşlem çalıştırılırken hata oluştu. Botun en üstte yer alan bir Yönetici rolüne sahip olduğundan emin olun.";
     if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(msg).catch(() => {});
+      await interaction.editReply({ content: msg }).catch(() => {});
     } else {
       await interaction
         .reply({ content: msg, flags: MessageFlags.Ephemeral })
         .catch(() => {});
     }
   }
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[UNHANDLED REJECTION]", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[UNCAUGHT EXCEPTION]", err);
 });
 
 function handleShutdown(signal) {

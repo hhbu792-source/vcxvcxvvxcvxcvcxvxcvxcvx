@@ -197,18 +197,18 @@ function buildCommands() {
       sub
         .setName("uyari-ver")
         .setDescription(
-          "Bir uyeye resmi uyari verir, DM bildirimi gonderir ve siciline kaydeder."
+          "Bir üyeye resmi uyarı verir, DM bildirimi gönderir ve siciline kaydeder."
         )
         .addUserOption((opt) =>
           opt
             .setName("kullanici")
-            .setDescription("Uyarilacak kullanici")
+            .setDescription("Uyarılacak kullanıcı")
             .setRequired(true)
         )
         .addStringOption((opt) =>
           opt
             .setName("sebep")
-            .setDescription("Uyari sebebi")
+            .setDescription("Uyarı sebebi")
             .setRequired(true)
         )
     )
@@ -216,48 +216,86 @@ function buildCommands() {
       sub
         .setName("uyari-kaldir")
         .setDescription(
-          "Bir uyenin uyarisini siler (ID, 'hepsi' veya bos birakilirsa son uyari)."
+          "Bir üyenin uyarısını siler (ID, 'hepsi' veya boş bırakılırsa son uyarı)."
         )
         .addUserOption((opt) =>
           opt
             .setName("kullanici")
-            .setDescription("Uyarisi silinecek kullanici")
+            .setDescription("Uyarısı silinecek kullanıcı")
             .setRequired(true)
         )
         .addStringOption((opt) =>
           opt
             .setName("uyari_id")
-            .setDescription("Silinecek uyari ID (W-1), 'hepsi' veya bos (son uyari)")
+            .setDescription("Silinecek uyarı ID (W-1), 'hepsi' veya boş (son uyarı)")
             .setRequired(false)
         )
     )
     .addSubcommand((sub) =>
       sub
         .setName("uyarilar")
-        .setDescription("Bir uyenin tum kayitli uyarilarini listeler.")
+        .setDescription("Bir üyenin tüm kayıtlı uyarılarını listeler.")
         .addUserOption((opt) =>
           opt
             .setName("kullanici")
-            .setDescription("Uyarilari goruntulenecek kullanici")
+            .setDescription("Uyarıları görüntülenecek kullanıcı")
             .setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("not-ekle")
+        .setDescription(
+          "Kullanıcının siciline sadece yöneticilerin göreceği iç not ekler."
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("kullanici")
+            .setDescription("Not eklenecek kullanıcı")
+            .setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("not")
+            .setDescription("Yetkili notu")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("not-sil")
+        .setDescription(
+          "Kullanıcının yetkili notunu siler (ID, 'hepsi' veya boş bırakılırsa son not)."
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("kullanici")
+            .setDescription("Notu silinecek kullanıcı")
+            .setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("not_id")
+            .setDescription("Silinecek not ID (N-1), 'hepsi' veya boş (son not)")
+            .setRequired(false)
         )
     )
     .addSubcommand((sub) =>
       sub
         .setName("rp-ekle")
         .setDescription(
-          "Bir uyenin katildigi RP sayisini manuel artirir veya duzeltir."
+          "Bir üyenin katıldığı RP sayısını manuel artırır veya düzeltir."
         )
         .addUserOption((opt) =>
           opt
             .setName("kullanici")
-            .setDescription("RP sayisi guncellenecek kullanici")
+            .setDescription("RP sayısı güncellenecek kullanıcı")
             .setRequired(true)
         )
         .addIntegerOption((opt) =>
           opt
             .setName("adet")
-            .setDescription("Eklenecek/cikarilacak RP sayisi (varsayilan: 1)")
+            .setDescription("Eklenecek/çıkarılacak RP sayısı (varsayılan: 1)")
             .setMinValue(-100)
             .setMaxValue(100)
             .setRequired(false)
@@ -265,32 +303,32 @@ function buildCommands() {
         .addStringOption((opt) =>
           opt
             .setName("not")
-            .setDescription("Aciklama veya RP notu (istege bagli)")
+            .setDescription("Açıklama veya RP notu (isteğe bağlı)")
             .setRequired(false)
         )
     )
     .addSubcommand((sub) =>
       sub
         .setName("yedek")
-        .setDescription("Sunucunun rol, kanal ve izin yedegini (snapshot) anlik olarak alir.")
+        .setDescription("Sunucunun rol, kanal ve izin yedeğini (snapshot) anlık olarak alır.")
     )
     .addSubcommand((sub) =>
       sub
         .setName("olaylar")
-        .setDescription("Son kaydedilen guvenlik olaylarini listeler.")
+        .setDescription("Son kaydedilen güvenlik olaylarını listeler.")
     );
 
   const userLog = new SlashCommandBuilder()
     .setName("user-log")
     .setDescription(
-      "Admin komutu: Discord ID ile kullanicinin RP, uyari, ban, kick ve sicil kayitlarini gosterir."
+      "Admin komutu: Discord ID ile kullanıcının RP, uyarı, ban, kick ve sicil dosyasını açar."
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .setContexts(InteractionContextType.Guild)
     .addStringOption((opt) =>
       opt
         .setName("id")
-        .setDescription("Kullanicinin Discord ID'si (etiket de yazilabilir)")
+        .setDescription("Kullanıcının Discord ID'si (etiket de yazılabilir)")
         .setRequired(true)
     );
 

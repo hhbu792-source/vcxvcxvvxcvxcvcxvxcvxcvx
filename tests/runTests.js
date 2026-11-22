@@ -362,12 +362,14 @@ async function runTests() {
   assert.strictEqual(cmds.length, 2);
   const defCmd = cmds.find((c) => c.name === "defender");
   const userLogCmd = cmds.find((c) => c.name === "user-log");
-  assert(defCmd && defCmd.options.length >= 16);
+  assert(defCmd && defCmd.options.length >= 20);
   assert(defCmd.options.some((o) => o.name === "blacklist"));
   assert(defCmd.options.some((o) => o.name === "blacklist-kaldir"));
   assert(defCmd.options.some((o) => o.name === "uyari-ver"));
   assert(defCmd.options.some((o) => o.name === "uyari-kaldir"));
   assert(defCmd.options.some((o) => o.name === "uyarilar"));
+  assert(defCmd.options.some((o) => o.name === "not-ekle"));
+  assert(defCmd.options.some((o) => o.name === "not-sil"));
   assert(defCmd.options.some((o) => o.name === "rp-ekle"));
   assert(!defCmd.options.some((o) => o.name === "karantina"));
   assert(userLogCmd && userLogCmd.options.some((o) => o.name === "id" && o.required));
@@ -880,17 +882,94 @@ async function runTests() {
   );
   assert.strictEqual(dupBlUpdate.recorded, false);
 
+  // 13d. Staff Notes add / remove
+  const note1 = await defender.userLogManager.addStaffNote(
+    guild,
+    player.user,
+    "RP kalitesi yuksek ancak OOC kurallarina dikkat etmeli.",
+    adminActor
+  );
+  assert.strictEqual(note1.entry.id, "N-1");
+  assert.strictEqual(note1.totalNotes, 1);
+
+  const note2 = await defender.userLogManager.addStaffNote(
+    guild,
+    player.user,
+    "Gecici not silinecek",
+    adminActor
+  );
+  assert.strictEqual(note2.entry.id, "N-2");
+  const remNote = await defender.userLogManager.removeStaffNote(
+    guild,
+    player.id,
+    "N-2",
+    adminActor
+  );
+  assert.strictEqual(remNote.removedCount, 1);
+  assert.strictEqual(remNote.remainingCount, 1);
+
   const userRec = defender.userLogStore.peekUser(guild.id, player.id);
   assert.strictEqual(userRec.rp.count, 3);
   assert.strictEqual(userRec.rp.messageCount, 3);
   assert.strictEqual(userRec.warnings.length, 1);
+  assert.strictEqual(userRec.removedWarningsCount, 1);
   assert.strictEqual(userRec.kicks.length, 1);
   assert.strictEqual(userRec.bans.length, 1);
   assert.strictEqual(userRec.unbans.length, 1);
   assert.strictEqual(userRec.timeouts.length, 1);
   assert.strictEqual(userRec.blacklists.length, 1);
+  assert.strictEqual(userRec.notes.length, 1);
 
-  const userLogEmbed = defender.userLogManager.buildUserLogEmbed({
+  // 13e. Interactive 5-tab /user-log dashboard, modals, warn confirm embed & .txt report export
+  const confirmEmbed = defender.userLogManager.buildWarnConfirmEmbed({
+    guild,
+    targetUser: player.user,
+    entry: w2.entry,
+    totalWarnings: 1,
+    dmSent: true,
+    moderator: adminActor,
+  });
+  assert.strictEqual(emojiRegex.test(JSON.stringify(confirmEmbed.toJSON())), false);
+
+  for (const tab of ["overview", "warnings", "punishments", "rp", "notes"]) {
+    const dash = defender.userLogManager.buildUserLogDashboard({
+      guild,
+      targetId: player.id,
+      discordUser: player.user,
+      member: player,
+      liveBan: null,
+      defenderBlacklisted: true,
+      tab,
+    });
+    assert.strictEqual(dash.embeds.length, 1);
+    assert.strictEqual(dash.components.length, 2);
+    assert.strictEqual(dash.components[0].components.length, 5);
+    assert.strictEqual(dash.components[1].components.length, 4);
+    const json = JSON.stringify(dash.embeds[0].toJSON());
+    assert.strictEqual(emojiRegex.test(json), false);
+    if (tab === "overview") {
+      assert(json.includes("Katıldığı RP Sayısı: **3**"));
+      assert(json.includes("Uyarı: **1**"));
+      assert(json.includes("Ban: **1**"));
+      assert(json.includes("Kick: **1**"));
+      assert(json.includes("Timeout: **1**"));
+      assert(json.includes("Blacklist: **1** (Aktif)"));
+      assert(json.includes("W-2"));
+    }
+    if (tab === "notes") {
+      assert(json.includes("N-1"));
+    }
+    if (tab === "rp") {
+      assert(json.includes("#level-0"));
+    }
+  }
+
+  const warnModal = defender.userLogManager.buildQuickWarnModal(player.id);
+  const noteModal = defender.userLogManager.buildQuickNoteModal(player.id);
+  assert.strictEqual(warnModal.toJSON().custom_id, `ulog:modal:warn:${player.id}`);
+  assert.strictEqual(noteModal.toJSON().custom_id, `ulog:modal:note:${player.id}`);
+
+  const reportTxt = defender.userLogManager.buildUserLogReportText({
     guild,
     targetId: player.id,
     discordUser: player.user,
@@ -898,16 +977,12 @@ async function runTests() {
     liveBan: null,
     defenderBlacklisted: true,
   });
-  const embedJson = JSON.stringify(userLogEmbed.toJSON());
-  assert(embedJson.includes("Katildigi RP Sayisi: **3**"));
-  assert(embedJson.includes("Uyari: **1**"));
-  assert(embedJson.includes("Ban: **1**"));
-  assert(embedJson.includes("Kick: **1**"));
-  assert(embedJson.includes("Timeout: **1**"));
-  assert(embedJson.includes("Blacklist: **1** (Aktif)"));
-  assert(embedJson.includes("W-2"));
-  assert.strictEqual(emojiRegex.test(embedJson), false);
-  console.log("[OK] Uyari Sistemi & /user-log: RP sayisi, uyarilar, ban, kick, timeout, blacklist ve emojisiz embed dogrulandi.");
+  assert(reportTxt.includes("DEFENDER KULLANICI SICIL RAPORU"));
+  assert(reportTxt.includes("[W-2]"));
+  assert(reportTxt.includes("[N-1]"));
+  assert(reportTxt.includes("Katildigi RP     : 3 (3 RP mesaji)"));
+  assert.strictEqual(emojiRegex.test(reportTxt), false);
+  console.log("[OK] Uyari Sistemi & Profesyonel /user-log: 5 sekme, risk skoru, modallar, yetkili notlari ve .txt rapor dogrulandi.");
 
   // 14. Forensic incident logs verified
   assert(logCh._sent.length >= 8);

@@ -10,7 +10,8 @@ const DEFAULT_USER_LOG_FILE = path.join(
 );
 
 const MAX_LIST_ENTRIES = 150;
-const MAX_RP_SESSIONS = 100;
+const MAX_RP_SESSIONS = 150;
+const MAX_STAFF_NOTES = 100;
 
 function createEmptyUserRecord(userId, now = Date.now()) {
   return {
@@ -21,6 +22,7 @@ function createEmptyUserRecord(userId, now = Date.now()) {
     joins: 0,
     leaves: 0,
     autoModCount: 0,
+    removedWarningsCount: 0,
     rp: {
       count: 0,
       messageCount: 0,
@@ -35,6 +37,7 @@ function createEmptyUserRecord(userId, now = Date.now()) {
       timeout: 0,
       blacklist: 0,
       rp: 0,
+      note: 0,
     },
     warnings: [],
     bans: [],
@@ -42,6 +45,7 @@ function createEmptyUserRecord(userId, now = Date.now()) {
     kicks: [],
     timeouts: [],
     blacklists: [],
+    notes: [],
   };
 }
 
@@ -57,6 +61,7 @@ function normalizeUserRecord(userId, raw) {
     joins: Number(raw.joins) || 0,
     leaves: Number(raw.leaves) || 0,
     autoModCount: Number(raw.autoModCount) || 0,
+    removedWarningsCount: Number(raw.removedWarningsCount) || 0,
     rp: {
       count: Math.max(0, Number(raw.rp?.count) || 0),
       messageCount: Math.max(0, Number(raw.rp?.messageCount) || 0),
@@ -66,26 +71,46 @@ function normalizeUserRecord(userId, raw) {
         : [],
     },
     counters: {
-      warning: Number(raw.counters?.warning) || (Array.isArray(raw.warnings) ? raw.warnings.length : 0),
-      ban: Number(raw.counters?.ban) || (Array.isArray(raw.bans) ? raw.bans.length : 0),
-      unban: Number(raw.counters?.unban) || (Array.isArray(raw.unbans) ? raw.unbans.length : 0),
-      kick: Number(raw.counters?.kick) || (Array.isArray(raw.kicks) ? raw.kicks.length : 0),
-      timeout: Number(raw.counters?.timeout) || (Array.isArray(raw.timeouts) ? raw.timeouts.length : 0),
+      warning:
+        Number(raw.counters?.warning) ||
+        (Array.isArray(raw.warnings) ? raw.warnings.length : 0),
+      ban:
+        Number(raw.counters?.ban) ||
+        (Array.isArray(raw.bans) ? raw.bans.length : 0),
+      unban:
+        Number(raw.counters?.unban) ||
+        (Array.isArray(raw.unbans) ? raw.unbans.length : 0),
+      kick:
+        Number(raw.counters?.kick) ||
+        (Array.isArray(raw.kicks) ? raw.kicks.length : 0),
+      timeout:
+        Number(raw.counters?.timeout) ||
+        (Array.isArray(raw.timeouts) ? raw.timeouts.length : 0),
       blacklist:
         Number(raw.counters?.blacklist) ||
         (Array.isArray(raw.blacklists) ? raw.blacklists.length : 0),
       rp:
         Number(raw.counters?.rp) ||
         (Array.isArray(raw.rp?.sessions) ? raw.rp.sessions.length : 0),
+      note:
+        Number(raw.counters?.note) ||
+        (Array.isArray(raw.notes) ? raw.notes.length : 0),
     },
-    warnings: Array.isArray(raw.warnings) ? raw.warnings.slice(-MAX_LIST_ENTRIES) : [],
+    warnings: Array.isArray(raw.warnings)
+      ? raw.warnings.slice(-MAX_LIST_ENTRIES)
+      : [],
     bans: Array.isArray(raw.bans) ? raw.bans.slice(-MAX_LIST_ENTRIES) : [],
-    unbans: Array.isArray(raw.unbans) ? raw.unbans.slice(-MAX_LIST_ENTRIES) : [],
+    unbans: Array.isArray(raw.unbans)
+      ? raw.unbans.slice(-MAX_LIST_ENTRIES)
+      : [],
     kicks: Array.isArray(raw.kicks) ? raw.kicks.slice(-MAX_LIST_ENTRIES) : [],
-    timeouts: Array.isArray(raw.timeouts) ? raw.timeouts.slice(-MAX_LIST_ENTRIES) : [],
+    timeouts: Array.isArray(raw.timeouts)
+      ? raw.timeouts.slice(-MAX_LIST_ENTRIES)
+      : [],
     blacklists: Array.isArray(raw.blacklists)
       ? raw.blacklists.slice(-MAX_LIST_ENTRIES)
       : [],
+    notes: Array.isArray(raw.notes) ? raw.notes.slice(-MAX_STAFF_NOTES) : [],
   };
 }
 
@@ -169,7 +194,11 @@ class UserLogStore {
     return g.users[uid];
   }
 
-  touchUser(guildId, userId, { tag = null, joined = false, left = false, now = Date.now() } = {}) {
+  touchUser(
+    guildId,
+    userId,
+    { tag = null, joined = false, left = false, now = Date.now() } = {}
+  ) {
     const rec = this.getUser(guildId, userId);
     if (tag) rec.lastTag = String(tag);
     rec.lastSeenAt = now;
@@ -182,7 +211,14 @@ class UserLogStore {
   addWarning(
     guildId,
     userId,
-    { reason, moderatorId = null, moderatorTag = "Yetkili", source = "manual", tag = null, now = Date.now() }
+    {
+      reason,
+      moderatorId = null,
+      moderatorTag = "Yetkili",
+      source = "manual",
+      tag = null,
+      now = Date.now(),
+    }
   ) {
     const rec = this.getUser(guildId, userId);
     if (tag) rec.lastTag = String(tag);
@@ -191,7 +227,7 @@ class UserLogStore {
 
     const entry = {
       id: `W-${rec.counters.warning}`,
-      reason: String(reason || "Belirtilmedi").trim().slice(0, 300),
+      reason: String(reason || "Belirtilmedi").trim().slice(0, 350),
       moderatorId: moderatorId ? String(moderatorId) : null,
       moderatorTag: String(moderatorTag || "Yetkili"),
       source: source === "auto" ? "auto" : "manual",
@@ -213,15 +249,17 @@ class UserLogStore {
     }
 
     const raw = String(warningIdOrAll || "").trim().toLowerCase();
-    if (raw === "hepsi" || raw === "all" || raw === "tumu") {
+    if (raw === "hepsi" || raw === "all" || raw === "tumu" || raw === "tümü") {
       const ids = rec.warnings.map((w) => w.id);
       rec.warnings = [];
+      rec.removedWarningsCount += ids.length;
       this.save();
       return { removedCount: ids.length, removedIds: ids, remainingCount: 0 };
     }
 
     if (!raw) {
       const removed = rec.warnings.pop();
+      if (removed) rec.removedWarningsCount += 1;
       this.save();
       return {
         removedCount: removed ? 1 : 0,
@@ -248,6 +286,7 @@ class UserLogStore {
     }
 
     const [removed] = rec.warnings.splice(idx, 1);
+    rec.removedWarningsCount += 1;
     this.save();
     return {
       removedCount: 1,
@@ -256,10 +295,98 @@ class UserLogStore {
     };
   }
 
+  addNote(
+    guildId,
+    userId,
+    {
+      note,
+      moderatorId = null,
+      moderatorTag = "Yetkili",
+      tag = null,
+      now = Date.now(),
+    }
+  ) {
+    const rec = this.getUser(guildId, userId);
+    if (tag) rec.lastTag = String(tag);
+    rec.lastSeenAt = now;
+    rec.counters.note += 1;
+
+    const entry = {
+      id: `N-${rec.counters.note}`,
+      note: String(note || "").trim().slice(0, 400),
+      moderatorId: moderatorId ? String(moderatorId) : null,
+      moderatorTag: String(moderatorTag || "Yetkili"),
+      createdAt: now,
+    };
+
+    rec.notes.push(entry);
+    if (rec.notes.length > MAX_STAFF_NOTES) {
+      rec.notes.splice(0, rec.notes.length - MAX_STAFF_NOTES);
+    }
+    this.save();
+    return { entry, totalNotes: rec.notes.length };
+  }
+
+  removeNote(guildId, userId, noteIdOrAll = null) {
+    const rec = this.peekUser(guildId, userId);
+    if (!rec || rec.notes.length === 0) {
+      return { removedCount: 0, removedIds: [], remainingCount: 0 };
+    }
+
+    const raw = String(noteIdOrAll || "").trim().toLowerCase();
+    if (raw === "hepsi" || raw === "all" || raw === "tumu" || raw === "tümü") {
+      const ids = rec.notes.map((n) => n.id);
+      rec.notes = [];
+      this.save();
+      return { removedCount: ids.length, removedIds: ids, remainingCount: 0 };
+    }
+
+    if (!raw) {
+      const removed = rec.notes.pop();
+      this.save();
+      return {
+        removedCount: removed ? 1 : 0,
+        removedIds: removed ? [removed.id] : [],
+        remainingCount: rec.notes.length,
+      };
+    }
+
+    const normalizedTarget = /^n-\d+$/.test(raw)
+      ? raw.toUpperCase()
+      : /^\d+$/.test(raw)
+      ? `N-${raw}`
+      : raw.toUpperCase();
+
+    const idx = rec.notes.findIndex(
+      (n) => String(n.id).toUpperCase() === normalizedTarget
+    );
+    if (idx === -1) {
+      return {
+        removedCount: 0,
+        removedIds: [],
+        remainingCount: rec.notes.length,
+      };
+    }
+
+    const [removed] = rec.notes.splice(idx, 1);
+    this.save();
+    return {
+      removedCount: 1,
+      removedIds: [removed.id],
+      remainingCount: rec.notes.length,
+    };
+  }
+
   recordBan(
     guildId,
     userId,
-    { reason = "Belirtilmedi", moderatorId = null, moderatorTag = "Bilinmiyor", tag = null, now = Date.now() } = {}
+    {
+      reason = "Belirtilmedi",
+      moderatorId = null,
+      moderatorTag = "Bilinmiyor",
+      tag = null,
+      now = Date.now(),
+    } = {}
   ) {
     const rec = this.getUser(guildId, userId);
     if (tag) rec.lastTag = String(tag);
@@ -268,7 +395,7 @@ class UserLogStore {
 
     const entry = {
       id: `B-${rec.counters.ban}`,
-      reason: String(reason || "Belirtilmedi").trim().slice(0, 300),
+      reason: String(reason || "Belirtilmedi").trim().slice(0, 350),
       moderatorId: moderatorId ? String(moderatorId) : null,
       moderatorTag: String(moderatorTag || "Bilinmiyor"),
       createdAt: now,
@@ -285,7 +412,13 @@ class UserLogStore {
   recordUnban(
     guildId,
     userId,
-    { reason = "Yasak kaldirildi", moderatorId = null, moderatorTag = "Bilinmiyor", tag = null, now = Date.now() } = {}
+    {
+      reason = "Yasak kaldırıldı",
+      moderatorId = null,
+      moderatorTag = "Bilinmiyor",
+      tag = null,
+      now = Date.now(),
+    } = {}
   ) {
     const rec = this.getUser(guildId, userId);
     if (tag) rec.lastTag = String(tag);
@@ -294,7 +427,7 @@ class UserLogStore {
 
     const entry = {
       id: `UB-${rec.counters.unban}`,
-      reason: String(reason || "Yasak kaldirildi").trim().slice(0, 300),
+      reason: String(reason || "Yasak kaldırıldı").trim().slice(0, 350),
       moderatorId: moderatorId ? String(moderatorId) : null,
       moderatorTag: String(moderatorTag || "Bilinmiyor"),
       createdAt: now,
@@ -311,7 +444,13 @@ class UserLogStore {
   recordKick(
     guildId,
     userId,
-    { reason = "Belirtilmedi", moderatorId = null, moderatorTag = "Bilinmiyor", tag = null, now = Date.now() } = {}
+    {
+      reason = "Belirtilmedi",
+      moderatorId = null,
+      moderatorTag = "Bilinmiyor",
+      tag = null,
+      now = Date.now(),
+    } = {}
   ) {
     const rec = this.getUser(guildId, userId);
     if (tag) rec.lastTag = String(tag);
@@ -320,7 +459,7 @@ class UserLogStore {
 
     const entry = {
       id: `K-${rec.counters.kick}`,
-      reason: String(reason || "Belirtilmedi").trim().slice(0, 300),
+      reason: String(reason || "Belirtilmedi").trim().slice(0, 350),
       moderatorId: moderatorId ? String(moderatorId) : null,
       moderatorTag: String(moderatorTag || "Bilinmiyor"),
       createdAt: now,
@@ -354,7 +493,7 @@ class UserLogStore {
 
     const entry = {
       id: `T-${rec.counters.timeout}`,
-      reason: String(reason || "Belirtilmedi").trim().slice(0, 300),
+      reason: String(reason || "Belirtilmedi").trim().slice(0, 350),
       durationMs: durationMs ? Number(durationMs) : null,
       until: until ? Number(until) : null,
       moderatorId: moderatorId ? String(moderatorId) : null,
@@ -390,7 +529,7 @@ class UserLogStore {
     const entry = {
       id: `BL-${rec.counters.blacklist}`,
       action: action === "remove" ? "remove" : "add",
-      reason: String(reason || "Belirtilmedi").trim().slice(0, 300),
+      reason: String(reason || "Belirtilmedi").trim().slice(0, 350),
       moderatorId: moderatorId ? String(moderatorId) : null,
       moderatorTag: String(moderatorTag || "Defender"),
       createdAt: now,
@@ -447,7 +586,11 @@ class UserLogStore {
       activeSession.messages += 1;
       if (channelName) activeSession.channelName = String(channelName);
       this.save();
-      return { newSession: false, totalRpCount: rec.rp.count, session: activeSession };
+      return {
+        newSession: false,
+        totalRpCount: rec.rp.count,
+        session: activeSession,
+      };
     }
 
     rec.counters.rp += 1;
@@ -475,7 +618,7 @@ class UserLogStore {
     userId,
     {
       delta = 1,
-      note = "Manuel RP kaydi",
+      note = "Manuel RP kaydı",
       moderatorId = null,
       moderatorTag = "Yetkili",
       tag = null,
@@ -500,7 +643,7 @@ class UserLogStore {
     const session = {
       id: `RP-${rec.counters.rp}`,
       channelId: null,
-      channelName: String(note || "Manuel RP kaydi").trim().slice(0, 100),
+      channelName: String(note || "Manuel RP kaydı").trim().slice(0, 100),
       startedAt: now,
       lastActivityAt: now,
       messages: 0,

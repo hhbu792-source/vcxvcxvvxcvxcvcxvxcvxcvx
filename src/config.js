@@ -30,9 +30,35 @@ const config = {
   ),
 };
 
+function isValidSnowflake(val) {
+  return /^\d{17,20}$/.test(String(val || "").trim());
+}
+
 config.snapshotIntervalMs = Math.round(
   config.snapshotIntervalMinutes * 60 * 1000
 );
 config.rpSessionGapMs = Math.round(config.rpSessionGapMinutes * 60 * 1000);
+
+config.validate = function validateConfig() {
+  const warnings = [];
+  if (config.clientId && !isValidSnowflake(config.clientId)) {
+    warnings.push(`CLIENT_ID gecersiz gorunuyor: "${config.clientId}"`);
+  }
+  if (config.guildId && !isValidSnowflake(config.guildId)) {
+    warnings.push(`GUILD_ID gecersiz gorunuyor: "${config.guildId}"`);
+  }
+  if (config.blacklistRoleId && !isValidSnowflake(config.blacklistRoleId)) {
+    warnings.push(`BLACKLIST_ROLE_ID gecersiz gorunuyor: "${config.blacklistRoleId}"`);
+  }
+  if (
+    config.ticketPanelChannelId &&
+    !isValidSnowflake(config.ticketPanelChannelId)
+  ) {
+    warnings.push(
+      `TICKET_PANEL_CHANNEL_ID gecersiz gorunuyor: "${config.ticketPanelChannelId}"`
+    );
+  }
+  return warnings;
+};
 
 module.exports = config;

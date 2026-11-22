@@ -125,6 +125,8 @@ class UserLogStore {
     this.persist = options.persist !== false;
     /** @type {Record<string, { users: Record<string, ReturnType<typeof createEmptyUserRecord>> }>} */
     this.guilds = {};
+    this._saveTimer = null;
+    this._dirty = false;
 
     if (this.persist) {
       this._load();
@@ -163,6 +165,11 @@ class UserLogStore {
   }
 
   save() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    this._dirty = false;
     if (!this.persist) return;
     try {
       const dir = path.dirname(this.filePath);
@@ -176,6 +183,25 @@ class UserLogStore {
       fs.renameSync(tmp, this.filePath);
     } catch (err) {
       console.error("[USER LOG STORE] Dosya kaydedilemedi:", err.message);
+    }
+  }
+
+  scheduleSave(delayMs = 2000) {
+    if (!this.persist) return;
+    this._dirty = true;
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      if (this._dirty) this.save();
+    }, delayMs);
+    if (typeof this._saveTimer.unref === "function") {
+      this._saveTimer.unref();
+    }
+  }
+
+  flush() {
+    if (this._saveTimer || this._dirty) {
+      this.save();
     }
   }
 
@@ -214,7 +240,7 @@ class UserLogStore {
     rec.lastSeenAt = now;
     if (joined) rec.joins += 1;
     if (left) rec.leaves += 1;
-    this.save();
+    this.scheduleSave();
     return rec;
   }
 
@@ -558,7 +584,7 @@ class UserLogStore {
     if (tag) rec.lastTag = String(tag);
     rec.lastSeenAt = now;
     rec.autoModCount += 1;
-    this.save();
+    this.scheduleSave();
     return rec.autoModCount;
   }
 
@@ -595,7 +621,7 @@ class UserLogStore {
       activeSession.lastActivityAt = now;
       activeSession.messages += 1;
       if (channelName) activeSession.channelName = String(channelName);
-      this.save();
+      this.scheduleSave();
       return {
         newSession: false,
         totalRpCount: rec.rp.count,

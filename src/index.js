@@ -1,6 +1,9 @@
 const {
+  ActionRowBuilder,
   ActivityType,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   EmbedBuilder,
   Events,
@@ -349,6 +352,10 @@ client.once(Events.ClientReady, async (readyClient) => {
   logger.info(`RP Takip Kategorisi    : ${config.rpCategoryName}`);
   logger.info("========================================");
 
+  for (const warn of config.validate()) {
+    logger.warn(`Yapilandirma uyarisi: ${warn}`);
+  }
+
   try {
     const res = await deployCommands({
       token: config.token,
@@ -369,8 +376,120 @@ client.on(Events.Error, (err) => {
   logger.error("Discord client hatasi:", err.message);
 });
 
+function buildDefenderStatusPayload(guild) {
+  const st = defender.getGuildStatus(guild);
+  const modLines = Object.entries(st.modules)
+    .map(([k, v]) => `- \`${k}\`: **${v ? "AÇIK" : "KAPALI"}**`)
+    .join("\n");
+
+  const snapText = st.snapshot
+    ? `${st.snapshot.roleCount} rol, ${st.snapshot.channelCount} kanal (<t:${Math.floor(st.snapshot.capturedAt / 1000)}:R>)`
+    : "Henüz alınmadı";
+
+  const wp = st.warningPolicy || {};
+  const warnPolicyText = wp.enabled
+    ? `**AÇIK** (Timeout: ${wp.timeoutThreshold || "Kapalı"} uyarı / ${wp.timeoutMinutes || 60} dk | Blacklist: ${wp.blacklistThreshold || "Kapalı"} uyarı)`
+    : "**Kapalı** (`/defender uyari-esik` ile açılabilir)";
+
+  const pingMs =
+    typeof client.ws?.ping === "number" && client.ws.ping >= 0
+      ? `${Math.round(client.ws.ping)} ms`
+      : "Hesaplanıyor";
+
+  const embed = new EmbedBuilder()
+    .setColor(st.lockdownActive || st.raidModeActive ? 0xc0392b : 0x2c3e50)
+    .setAuthor({ name: "Defender Güvenlik Motoru" })
+    .setTitle(`Canlı Güvenlik Durumu - ${guild.name}`)
+    .addFields(
+      {
+        name: "Genel & Sağlık",
+        value: [
+          `Sistem: **${st.enabled ? "AKTİF" : "PASİF"}**`,
+          `Ceza Modu: \`${st.punishmentMode}\``,
+          `Acil Kilit: **${st.lockdownActive ? "AKTİF" : "Kapalı"}**`,
+          `Raid Modu: **${st.raidModeActive ? "AKTİF" : "Normal"}**`,
+          `Gecikme: **${pingMs}** | Açılış: <t:${Math.floor(startedAt / 1000)}:R>`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Kayıtlar & Sicil",
+        value: [
+          `Log Kanalı: ${st.logChannelId ? `<#${st.logChannelId}>` : "Ayarlanmadı"}`,
+          `Blacklist Rolü: ${st.blacklistRoleId ? `<@&${st.blacklistRoleId}>` : "Ayarlanmadı"}`,
+          `Blacklist'teki Üye: **${st.blacklistedCount}**`,
+          `Sicil Kayıtlı Üye: **${st.trackedUsersCount}**`,
+          `Toplam Olay: **${st.incidentCount}**`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "Uyarı Kademe Politikası & Yedek",
+        value: [
+          `Otomatik Uyarı Eşiği: ${warnPolicyText}`,
+          `RP Takip Kategorisi: \`${config.rpCategoryName}\``,
+          `Whitelist: Kullanıcı ${st.whitelistCounts.users} | Rol ${st.whitelistCounts.roles} | Bot ${st.whitelistCounts.bots}`,
+          `Son Yedek: ${snapText}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Koruma Modülleri",
+        value: modLines,
+        inline: false,
+      }
+    )
+    .setFooter({ text: `Defender Güvenlik Sistemi | ${guild.name}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("def:status:refresh")
+      .setLabel("Durumu Yenile")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("def:status:stats")
+      .setLabel("Sunucu İstatistikleri")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+async function handleDefenderStatusButton(interaction) {
+  if (!interaction.guild) return;
+  if (!isAdministrator(interaction)) {
+    await interaction.reply({
+      content:
+        "Bu paneli sadece **Yönetici (Administrator)** yetkisine sahip kişiler kullanabilir.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.customId === "def:status:refresh") {
+    await interaction.update(buildDefenderStatusPayload(interaction.guild));
+    return;
+  }
+
+  if (interaction.customId === "def:status:stats") {
+    const statsEmbed = defender.userLogManager.buildGuildStatsEmbed(
+      interaction.guild
+    );
+    await interaction.reply({
+      embeds: [statsEmbed],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (interaction.isButton() && interaction.customId.startsWith("def:status:")) {
+      await handleDefenderStatusButton(interaction);
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith("ulog:")) {
       await handleUserLogButton(interaction);
       return;
@@ -483,73 +602,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (sub === "durum") {
-      const st = defender.getGuildStatus(guild);
-      const modLines = Object.entries(st.modules)
-        .map(([k, v]) => `- \`${k}\`: **${v ? "AÇIK" : "KAPALI"}**`)
-        .join("\n");
-
-      const snapText = st.snapshot
-        ? `${st.snapshot.roleCount} rol, ${st.snapshot.channelCount} kanal (<t:${Math.floor(st.snapshot.capturedAt / 1000)}:R>)`
-        : "Henüz alınmadı";
-
-      const wp = st.warningPolicy || {};
-      const warnPolicyText = wp.enabled
-        ? `**AÇIK** (Timeout: ${wp.timeoutThreshold || "Kapalı"} uyarı / ${wp.timeoutMinutes || 60} dk | Blacklist: ${wp.blacklistThreshold || "Kapalı"} uyarı)`
-        : "**Kapalı** (`/defender uyari-esik` ile açılabilir)";
-
-      const pingMs =
-        typeof client.ws?.ping === "number" && client.ws.ping >= 0
-          ? `${Math.round(client.ws.ping)} ms`
-          : "Hesaplanıyor";
-
-      const embed = new EmbedBuilder()
-        .setColor(st.lockdownActive || st.raidModeActive ? 0xc0392b : 0x2c3e50)
-        .setAuthor({ name: "Defender Güvenlik Motoru" })
-        .setTitle(`Canlı Güvenlik Durumu - ${guild.name}`)
-        .addFields(
-          {
-            name: "Genel & Sağlık",
-            value: [
-              `Sistem: **${st.enabled ? "AKTİF" : "PASİF"}**`,
-              `Ceza Modu: \`${st.punishmentMode}\``,
-              `Acil Kilit: **${st.lockdownActive ? "AKTİF" : "Kapalı"}**`,
-              `Raid Modu: **${st.raidModeActive ? "AKTİF" : "Normal"}**`,
-              `Gecikme: **${pingMs}** | Açılış: <t:${Math.floor(startedAt / 1000)}:R>`,
-            ].join("\n"),
-            inline: true,
-          },
-          {
-            name: "Kayıtlar & Sicil",
-            value: [
-              `Log Kanalı: ${st.logChannelId ? `<#${st.logChannelId}>` : "Ayarlanmadı"}`,
-              `Blacklist Rolü: ${st.blacklistRoleId ? `<@&${st.blacklistRoleId}>` : "Ayarlanmadı"}`,
-              `Blacklist'teki Üye: **${st.blacklistedCount}**`,
-              `Sicil Kayıtlı Üye: **${st.trackedUsersCount}**`,
-              `Toplam Olay: **${st.incidentCount}**`,
-            ].join("\n"),
-            inline: true,
-          },
-          {
-            name: "Uyarı Kademe Politikası & Yedek",
-            value: [
-              `Otomatik Uyarı Eşiği: ${warnPolicyText}`,
-              `RP Takip Kategorisi: \`${config.rpCategoryName}\``,
-              `Whitelist: Kullanıcı ${st.whitelistCounts.users} | Rol ${st.whitelistCounts.roles} | Bot ${st.whitelistCounts.bots}`,
-              `Son Yedek: ${snapText}`,
-            ].join("\n"),
-            inline: false,
-          },
-          {
-            name: "Koruma Modülleri",
-            value: modLines,
-            inline: false,
-          }
-        )
-        .setFooter({ text: `Defender Güvenlik Sistemi | ${guild.name}` })
-        .setTimestamp();
-
       await interaction.reply({
-        embeds: [embed],
+        ...buildDefenderStatusPayload(guild),
         flags: MessageFlags.Ephemeral,
       });
       return;

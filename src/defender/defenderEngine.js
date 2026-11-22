@@ -309,6 +309,12 @@ class DefenderEngine {
     if (this._pruneTimer) clearInterval(this._pruneTimer);
     this._snapshotTimer = null;
     this._pruneTimer = null;
+    if (this.userLogStore && typeof this.userLogStore.flush === "function") {
+      this.userLogStore.flush();
+    }
+    if (this.store && typeof this.store.save === "function") {
+      this.store.save();
+    }
   }
 }
 

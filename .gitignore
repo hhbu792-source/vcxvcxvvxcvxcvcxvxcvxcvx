@@ -3,7 +3,10 @@ node_modules/
 .env.*
 !.env.example
 data/defender-state.json
+data/user-logs.json
 data/snapshots/
+data/*.tmp
+data/*.bak
 *.log
 npm-debug.log*
 .DS_Store

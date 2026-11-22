@@ -309,6 +309,50 @@ function buildCommands() {
     )
     .addSubcommand((sub) =>
       sub
+        .setName("uyari-esik")
+        .setDescription(
+          "Uyarı eşiğinde otomatik timeout veya blacklist kademesini ayarlar."
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("aktif")
+            .setDescription("Otomatik uyarı kademesi açık mı?")
+            .setRequired(true)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("timeout_sinir")
+            .setDescription("Otomatik susturma için uyarı sayısı (0 = kapalı)")
+            .setMinValue(0)
+            .setMaxValue(20)
+            .setRequired(false)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("timeout_dakika")
+            .setDescription("Otomatik susturma süresi (dakika, varsayılan: 60)")
+            .setMinValue(1)
+            .setMaxValue(40320)
+            .setRequired(false)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("blacklist_sinir")
+            .setDescription("Otomatik Blacklist için uyarı sayısı (0 = kapalı)")
+            .setMinValue(0)
+            .setMaxValue(20)
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("istatistik")
+        .setDescription(
+          "Sunucu geneli RP sıralamasını ve moderasyon istatistiklerini gösterir."
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName("yedek")
         .setDescription("Sunucunun rol, kanal ve izin yedeğini (snapshot) anlık olarak alır.")
     )

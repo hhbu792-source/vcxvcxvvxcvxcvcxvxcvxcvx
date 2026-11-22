@@ -542,20 +542,87 @@ class UserLogManager {
       }
     );
 
+    // Optional configurable warning auto-escalation policy
+    let escalation = null;
+    const gDef = this.defenderStore ? this.defenderStore.getGuild(guild.id) : null;
+    const policy = gDef?.warningPolicy;
+    if (policy?.enabled && this.punishmentEngine) {
+      let member = guild.members?.cache?.get(targetUser.id) || null;
+      if (!member && typeof guild.members?.fetch === "function") {
+        member = await guild.members.fetch(targetUser.id).catch(() => null);
+      }
+
+      if (member) {
+        if (
+          policy.blacklistThreshold > 0 &&
+          totalWarnings >= policy.blacklistThreshold
+        ) {
+          const blRes = await this.punishmentEngine.blacklistMember(
+            guild,
+            member,
+            `Uyarı eşiği aşıldı (${totalWarnings}/${policy.blacklistThreshold}): ${cleanReason}`,
+            moderator?.tag || "Defender/Uyarı Eşiği",
+            moderator?.id || null
+          );
+          if (blRes.ok) {
+            escalation = {
+              action: "blacklist",
+              label: `Otomatik Blacklist (<@&${blRes.blacklistRoleId}>)`,
+            };
+          }
+        } else if (
+          policy.timeoutThreshold > 0 &&
+          totalWarnings >= policy.timeoutThreshold &&
+          typeof member.timeout === "function"
+        ) {
+          const durMs = Math.max(1, policy.timeoutMinutes || 60) * 60 * 1000;
+          const ok = await member
+            .timeout(
+              durMs,
+              `Defender Uyarı Eşiği (${totalWarnings}/${policy.timeoutThreshold}): ${cleanReason}`
+            )
+            .then(() => true)
+            .catch(() => false);
+          if (ok) {
+            this.recordDirectTimeout(guild.id, targetUser.id, {
+              durationMs: durMs,
+              reason: `Uyarı eşiği (${totalWarnings}/${policy.timeoutThreshold}): ${cleanReason}`,
+              moderatorId: moderator?.id || null,
+              moderatorTag: moderator?.tag || "Defender/Uyarı Eşiği",
+              tag: targetUser.tag || targetUser.username || null,
+            });
+            escalation = {
+              action: "timeout",
+              label: `Otomatik Susturma (${formatDurationTr(durMs)})`,
+            };
+          }
+        }
+      }
+    }
+
     let dmSent = false;
     if (typeof targetUser.send === "function") {
+      const dmFields = [
+        { name: "Uyarı Kodu", value: `\`${entry.id}\``, inline: true },
+        { name: "Aktif Uyarı Sayısı", value: `**${totalWarnings}**`, inline: true },
+        { name: "Sebep", value: clampText(cleanReason, 950), inline: false },
+      ];
+      if (escalation) {
+        dmFields.push({
+          name: "Otomatik Kademe İşlemi",
+          value: escalation.label,
+          inline: false,
+        });
+      }
+
       const dmEmbed = new EmbedBuilder()
-        .setColor(0xe67e22)
+        .setColor(escalation ? 0xc0392b : 0xe67e22)
         .setAuthor({ name: `${guild.name} | Resmi Uyarı Bildirimi` })
         .setTitle(`Uyarı Kaydı: ${entry.id}`)
         .setDescription(
           "Sunucu yönetimi tarafından hesabınıza resmi bir uyarı kaydedildi. Lütfen sunucu kurallarına dikkat ediniz."
         )
-        .addFields(
-          { name: "Uyarı Kodu", value: `\`${entry.id}\``, inline: true },
-          { name: "Aktif Uyarı Sayısı", value: `**${totalWarnings}**`, inline: true },
-          { name: "Sebep", value: clampText(cleanReason, 950), inline: false }
-        )
+        .addFields(dmFields)
         .setFooter({ text: `Defender Moderasyon Sistemi | ${guild.name}` })
         .setTimestamp(entry.createdAt);
 
@@ -568,16 +635,18 @@ class UserLogManager {
     if (this.punishmentEngine) {
       await this.punishmentEngine.logIncident(guild, {
         module: "WARNING",
-        severity: "MEDIUM",
+        severity: escalation ? "HIGH" : "MEDIUM",
         action: `Kullanıcı Uyarıldı (${entry.id})`,
         executorId: moderator?.id || null,
         target: `<@${targetUser.id}> (\`${targetUser.id}\`)`,
-        details: `Sebep: ${cleanReason} | Toplam uyarı: ${totalWarnings}`,
-        punishment: `warning (${entry.id})`,
+        details: `Sebep: ${cleanReason} | Toplam uyarı: ${totalWarnings}${escalation ? ` | Kademe: ${escalation.label}` : ""}`,
+        punishment: escalation
+          ? `warning (${entry.id}) + ${escalation.action}`
+          : `warning (${entry.id})`,
       });
     }
 
-    return { entry, totalWarnings, dmSent };
+    return { entry, totalWarnings, dmSent, escalation };
   }
 
   async removeWarning(guild, targetUserId, warningIdOrAll, moderator) {
@@ -644,38 +713,49 @@ class UserLogManager {
     totalWarnings,
     dmSent,
     moderator,
+    escalation = null,
   }) {
+    const fields = [
+      {
+        name: "Kullanıcı",
+        value: `<@${targetUser.id}> (\`${targetUser.id}\`)`,
+        inline: true,
+      },
+      {
+        name: "Yetkili",
+        value: moderator?.id ? `<@${moderator.id}>` : "Yetkili",
+        inline: true,
+      },
+      {
+        name: "Toplam Aktif Uyarı",
+        value: `**${totalWarnings}**`,
+        inline: true,
+      },
+      {
+        name: "Sebep",
+        value: clampText(entry.reason, 950),
+        inline: false,
+      },
+      {
+        name: "DM Bildirimi",
+        value: dmSent ? "Gönderildi" : "Gönderilemedi (Kullanıcı DM kapalı)",
+        inline: true,
+      },
+    ];
+
+    if (escalation) {
+      fields.push({
+        name: "Otomatik Eşik İşlemi",
+        value: escalation.label,
+        inline: true,
+      });
+    }
+
     return new EmbedBuilder()
-      .setColor(0xe67e22)
+      .setColor(escalation ? 0xc0392b : 0xe67e22)
       .setAuthor({ name: "Defender Moderasyon | Uyarı İşlemi" })
       .setTitle(`Uyarı Kaydedildi (${entry.id})`)
-      .addFields(
-        {
-          name: "Kullanıcı",
-          value: `<@${targetUser.id}> (\`${targetUser.id}\`)`,
-          inline: true,
-        },
-        {
-          name: "Yetkili",
-          value: moderator?.id ? `<@${moderator.id}>` : "Yetkili",
-          inline: true,
-        },
-        {
-          name: "Toplam Aktif Uyarı",
-          value: `**${totalWarnings}**`,
-          inline: true,
-        },
-        {
-          name: "Sebep",
-          value: clampText(entry.reason, 950),
-          inline: false,
-        },
-        {
-          name: "DM Bildirimi",
-          value: dmSent ? "Gönderildi" : "Gönderilemedi (Kullanıcı DM kapalı)",
-          inline: true,
-        }
-      )
+      .addFields(fields)
       .setFooter({ text: `Defender Uyarı Sistemi | ${guild.name}` })
       .setTimestamp(entry.createdAt);
   }
@@ -898,8 +978,14 @@ class UserLogManager {
     liveBan = null,
     defenderBlacklisted = false,
     tab = "overview",
+    page = 1,
   }) {
+    const PAGE_SIZE = 8;
     const activeTab = VALID_TABS.has(tab) ? tab : "overview";
+    const requestedPage = Math.max(1, Math.trunc(Number(page) || 1));
+    let currentPage = requestedPage;
+    let totalPages = 1;
+
     const ctx = this._resolveContext({
       guild,
       targetId,
@@ -1012,12 +1098,18 @@ class UserLogManager {
           text: `Sekme: Genel Özet | Yetkili Notları: ${rec.notes.length} | ID: ${uid}`,
         });
     } else if (activeTab === "warnings") {
+      const reversed = [...rec.warnings].reverse();
+      totalPages = Math.max(1, Math.ceil(reversed.length / PAGE_SIZE));
+      currentPage = Math.min(requestedPage, totalPages);
+      const slice = reversed.slice(
+        (currentPage - 1) * PAGE_SIZE,
+        currentPage * PAGE_SIZE
+      );
+
       const warnLines =
-        rec.warnings.length === 0
+        slice.length === 0
           ? "Bu kullanıcıya ait aktif uyarı kaydı bulunmuyor."
-          : rec.warnings
-              .slice(-12)
-              .reverse()
+          : slice
               .map(
                 (w) =>
                   `- **\`${w.id}\`** | <t:${Math.floor(w.createdAt / 1000)}:R> | Yetkili: ${formatActor(w)}\n  Sebep: ${truncateLine(w.reason, 160)}`
@@ -1037,16 +1129,20 @@ class UserLogManager {
           { name: "Sicil Durumu", value: `**${risk.label}**`, inline: true }
         )
         .setFooter({
-          text: `Sekme: Uyarılar (Son 12 kayıt) | ID: ${uid}`,
+          text: `Sekme: Uyarılar | Sayfa ${currentPage}/${totalPages} | ID: ${uid}`,
         });
     } else if (activeTab === "punishments") {
+      totalPages = Math.max(1, Math.ceil(modTimeline.length / PAGE_SIZE));
+      currentPage = Math.min(requestedPage, totalPages);
+      const slice = modTimeline.slice(
+        (currentPage - 1) * PAGE_SIZE,
+        currentPage * PAGE_SIZE
+      );
+
       const punLines =
-        modTimeline.length === 0
+        slice.length === 0
           ? "Kayıtlı ban, unban, kick, timeout veya blacklist işlemi bulunmuyor."
-          : modTimeline
-              .slice(0, 12)
-              .map((item) => item.line)
-              .join("\n");
+          : slice.map((item) => item.line).join("\n");
 
       embed
         .setTitle(`Ceza & Moderasyon Geçmişi - ${displayName}`)
@@ -1069,7 +1165,7 @@ class UserLogManager {
           }
         )
         .setFooter({
-          text: `Sekme: Ceza Geçmişi (Son 12 kayıt) | ID: ${uid}`,
+          text: `Sekme: Ceza Geçmişi | Sayfa ${currentPage}/${totalPages} | ID: ${uid}`,
         });
     } else if (activeTab === "rp") {
       const autoSessions = rec.rp.sessions.filter((s) => s.source === "auto");
@@ -1088,12 +1184,18 @@ class UserLogManager {
               )
               .join("\n");
 
+      const reversedSessions = [...rec.rp.sessions].reverse();
+      totalPages = Math.max(1, Math.ceil(reversedSessions.length / PAGE_SIZE));
+      currentPage = Math.min(requestedPage, totalPages);
+      const slice = reversedSessions.slice(
+        (currentPage - 1) * PAGE_SIZE,
+        currentPage * PAGE_SIZE
+      );
+
       const rpLines =
-        rec.rp.sessions.length === 0
+        slice.length === 0
           ? "Henüz RP katılımı kaydedilmedi."
-          : rec.rp.sessions
-              .slice(-10)
-              .reverse()
+          : slice
               .map((s) => {
                 if (s.source === "manual") {
                   const sign = s.delta > 0 ? `+${s.delta}` : String(s.delta);
@@ -1122,21 +1224,27 @@ class UserLogManager {
             inline: true,
           },
           {
-            name: `Son RP Oturumları (Son 10 / Toplam ${rec.rp.count})`,
+            name: `RP Oturumları (Sayfa ${currentPage}/${totalPages} | Toplam ${rec.rp.count})`,
             value: clampText(rpLines, 1000),
             inline: false,
           }
         )
         .setFooter({
-          text: `Sekme: RP Geçmişi | Takip Kategorisi: ${this.rpCategoryName} | ID: ${uid}`,
+          text: `Sekme: RP Geçmişi | Sayfa ${currentPage}/${totalPages} | Kategori: ${this.rpCategoryName}`,
         });
     } else if (activeTab === "notes") {
+      const reversedNotes = [...rec.notes].reverse();
+      totalPages = Math.max(1, Math.ceil(reversedNotes.length / PAGE_SIZE));
+      currentPage = Math.min(requestedPage, totalPages);
+      const slice = reversedNotes.slice(
+        (currentPage - 1) * PAGE_SIZE,
+        currentPage * PAGE_SIZE
+      );
+
       const noteLines =
-        rec.notes.length === 0
+        slice.length === 0
           ? "Bu kullanıcı için eklenmiş yetkili notu bulunmuyor.\nAşağıdaki **Not Ekle** butonunu veya `/defender not-ekle` komutunu kullanabilirsiniz."
-          : rec.notes
-              .slice(-12)
-              .reverse()
+          : slice
               .map(
                 (n) =>
                   `- **\`${n.id}\`** | <t:${Math.floor(n.createdAt / 1000)}:R> | Yetkili: ${formatActor(n)}\n  ${truncateLine(n.note, 180)}`
@@ -1153,27 +1261,27 @@ class UserLogManager {
           inline: false,
         })
         .setFooter({
-          text: `Sekme: Yetkili Notları (Toplam ${rec.notes.length}) | ID: ${uid}`,
+          text: `Sekme: Yetkili Notları | Sayfa ${currentPage}/${totalPages} | ID: ${uid}`,
         });
     }
 
     const tabRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`ulog:tab:${uid}:overview`)
+        .setCustomId(`ulog:tab:${uid}:overview:1`)
         .setLabel("Genel Özet")
         .setStyle(
           activeTab === "overview" ? ButtonStyle.Primary : ButtonStyle.Secondary
         )
         .setDisabled(activeTab === "overview"),
       new ButtonBuilder()
-        .setCustomId(`ulog:tab:${uid}:warnings`)
+        .setCustomId(`ulog:tab:${uid}:warnings:1`)
         .setLabel(`Uyarılar (${rec.warnings.length})`)
         .setStyle(
           activeTab === "warnings" ? ButtonStyle.Primary : ButtonStyle.Secondary
         )
         .setDisabled(activeTab === "warnings"),
       new ButtonBuilder()
-        .setCustomId(`ulog:tab:${uid}:punishments`)
+        .setCustomId(`ulog:tab:${uid}:punishments:1`)
         .setLabel(`Cezalar (${modTimeline.length})`)
         .setStyle(
           activeTab === "punishments"
@@ -1182,12 +1290,12 @@ class UserLogManager {
         )
         .setDisabled(activeTab === "punishments"),
       new ButtonBuilder()
-        .setCustomId(`ulog:tab:${uid}:rp`)
+        .setCustomId(`ulog:tab:${uid}:rp:1`)
         .setLabel(`RP (${rec.rp.count})`)
         .setStyle(activeTab === "rp" ? ButtonStyle.Primary : ButtonStyle.Secondary)
         .setDisabled(activeTab === "rp"),
       new ButtonBuilder()
-        .setCustomId(`ulog:tab:${uid}:notes`)
+        .setCustomId(`ulog:tab:${uid}:notes:1`)
         .setLabel(`Notlar (${rec.notes.length})`)
         .setStyle(
           activeTab === "notes" ? ButtonStyle.Primary : ButtonStyle.Secondary
@@ -1205,7 +1313,7 @@ class UserLogManager {
         .setLabel("Not Ekle")
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`ulog:refresh:${uid}:${activeTab}`)
+        .setCustomId(`ulog:refresh:${uid}:${activeTab}:${currentPage}`)
         .setLabel("Yenile")
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
@@ -1214,7 +1322,100 @@ class UserLogManager {
         .setStyle(ButtonStyle.Success)
     );
 
-    return { embeds: [embed], components: [tabRow, actionRow] };
+    const components = [tabRow, actionRow];
+
+    if (totalPages > 1) {
+      const pageRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ulog:tab:${uid}:${activeTab}:${Math.max(1, currentPage - 1)}`)
+          .setLabel("Önceki Sayfa")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentPage <= 1),
+        new ButtonBuilder()
+          .setCustomId(`ulog:pageinfo:${uid}`)
+          .setLabel(`Sayfa ${currentPage} / ${totalPages}`)
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true),
+        new ButtonBuilder()
+          .setCustomId(
+            `ulog:tab:${uid}:${activeTab}:${Math.min(totalPages, currentPage + 1)}`
+          )
+          .setLabel("Sonraki Sayfa")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(currentPage >= totalPages)
+      );
+      components.push(pageRow);
+    }
+
+    return { embeds: [embed], components };
+  }
+
+  buildGuildStatsEmbed(guild) {
+    const stats = this.store.getGuildStats(guild.id, 5);
+    const gDef = this.defenderStore ? this.defenderStore.getGuild(guild.id) : null;
+    const activeBlacklistCount = gDef
+      ? Object.keys(gDef.blacklistedUsers || {}).length
+      : 0;
+
+    const topRpText =
+      stats.topRpUsers.length === 0
+        ? "Henüz RP katılım kaydı bulunmuyor."
+        : stats.topRpUsers
+            .map(
+              (u, i) =>
+                `${i + 1}. <@${u.userId}> — **${u.rpCount}** RP (${u.messageCount} mesaj)`
+            )
+            .join("\n");
+
+    const topWarnText =
+      stats.topWarnedUsers.length === 0
+        ? "Aktif uyarısı olan kullanıcı bulunmuyor."
+        : stats.topWarnedUsers
+            .map(
+              (u, i) =>
+                `${i + 1}. <@${u.userId}> — **${u.warningsCount}** aktif uyarı`
+            )
+            .join("\n");
+
+    return new EmbedBuilder()
+      .setColor(0x2c3e50)
+      .setAuthor({ name: "Defender Moderasyon & RP Analitiği" })
+      .setTitle(`Sunucu İstatistikleri - ${guild.name}`)
+      .addFields(
+        {
+          name: "RP Özeti",
+          value: [
+            `Kayıtlı Kullanıcı: **${stats.trackedUsers}**`,
+            `Toplam RP Oturumu: **${stats.totalRpSessions}**`,
+            `Toplam RP Mesajı: **${stats.totalRpMessages}**`,
+            `Takip Kategorisi: \`${this.rpCategoryName}\``,
+          ].join("\n"),
+          inline: true,
+        },
+        {
+          name: "Moderasyon Özeti",
+          value: [
+            `Aktif Uyarı: **${stats.totalWarnings}**`,
+            `Ban / Kick: **${stats.totalBans}** ban | **${stats.totalKicks}** kick`,
+            `Timeout: **${stats.totalTimeouts}**`,
+            `Blacklist: **${stats.totalBlacklists}** işlem (**${activeBlacklistCount}** aktif)`,
+            `Yetkili Notu: **${stats.totalNotes}**`,
+          ].join("\n"),
+          inline: true,
+        },
+        {
+          name: "En Aktif RP Oyuncuları (Top 5)",
+          value: clampText(topRpText, 1000),
+          inline: false,
+        },
+        {
+          name: "En Çok Uyarı Alanlar (Top 5)",
+          value: clampText(topWarnText, 1000),
+          inline: false,
+        }
+      )
+      .setFooter({ text: `Defender İstatistik Sistemi | ${guild.name}` })
+      .setTimestamp();
   }
 
   buildUserLogEmbed(params) {

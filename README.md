@@ -56,9 +56,11 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
 | `/defender uyari-ver <kullanici> <sebep>` | Üyeye resmi uyarı verir, DM gönderir ve siciline kaydeder |
 | `/defender uyari-kaldir <kullanici> [uyari_id]` | Belirli uyarıyı (`W-1`), son uyarıyı veya `hepsi` ile tüm uyarıları siler |
 | `/defender uyarilar <kullanici>` | Üyenin tüm kayıtlı uyarılarını listeler |
+| `/defender uyari-esik <aktif> [timeout_sinir] [timeout_dakika] [blacklist_sinir]` | Uyarı eşiğinde otomatik timeout / Blacklist kademesini açar veya ayarlar *(Sunucu Sahibi / Whitelist Admin)* |
 | `/defender not-ekle <kullanici> <not>` | Kullanıcının siciline sadece yöneticilere görünen iç not ekler |
 | `/defender not-sil <kullanici> [not_id]` | Belirli notu (`N-1`), son notu veya `hepsi` ile tüm notları siler |
 | `/defender rp-ekle <kullanici> [adet] [not]` | Üyenin RP sayısını manuel artırır veya düzeltir |
+| `/defender istatistik` | Sunucu geneli RP sıralaması (Top 5) ve moderasyon analitiğini gösterir |
 | `/defender kurulum` | `#defender-log`, Blacklist rolü (`1573704309034586286`) ve ilk sunucu yedeğini tek tıkla kurar |
 | `/defender durum` | Tüm koruma modüllerinin canlı durumunu gösterir |
 | `/defender modul <ad> <aktif>` | İstenen koruma modülünü açar/kapatır *(Sunucu Sahibi / Whitelist Admin)* |

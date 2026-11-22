@@ -149,6 +149,16 @@ class UserLogStore {
       }
     } catch (err) {
       console.error("[USER LOG STORE] Dosya yuklenemedi:", err.message);
+      try {
+        if (fs.existsSync(this.filePath)) {
+          fs.copyFileSync(
+            this.filePath,
+            `${this.filePath}.corrupt-${Date.now()}.bak`
+          );
+        }
+      } catch {
+        // Ignore backup failure
+      }
     }
   }
 
@@ -659,6 +669,72 @@ class UserLogStore {
     }
     this.save();
     return { totalRpCount: rec.rp.count, delta: amount, session };
+  }
+
+  getGuildStats(guildId, topLimit = 5) {
+    const g = this.guilds[String(guildId)];
+    const users = g ? Object.values(g.users) : [];
+
+    let totalRpSessions = 0;
+    let totalRpMessages = 0;
+    let totalWarnings = 0;
+    let totalBans = 0;
+    let totalKicks = 0;
+    let totalTimeouts = 0;
+    let totalBlacklists = 0;
+    let totalNotes = 0;
+
+    for (const u of users) {
+      totalRpSessions += u.rp?.count || 0;
+      totalRpMessages += u.rp?.messageCount || 0;
+      totalWarnings += u.warnings?.length || 0;
+      totalBans += u.bans?.length || 0;
+      totalKicks += u.kicks?.length || 0;
+      totalTimeouts += u.timeouts?.length || 0;
+      totalBlacklists += (u.blacklists || []).filter(
+        (b) => b.action !== "remove"
+      ).length;
+      totalNotes += u.notes?.length || 0;
+    }
+
+    const topRpUsers = users
+      .filter((u) => (u.rp?.count || 0) > 0)
+      .sort(
+        (a, b) =>
+          (b.rp.count || 0) - (a.rp.count || 0) ||
+          (b.rp.messageCount || 0) - (a.rp.messageCount || 0)
+      )
+      .slice(0, topLimit)
+      .map((u) => ({
+        userId: u.userId,
+        lastTag: u.lastTag,
+        rpCount: u.rp.count,
+        messageCount: u.rp.messageCount,
+      }));
+
+    const topWarnedUsers = users
+      .filter((u) => (u.warnings?.length || 0) > 0)
+      .sort((a, b) => b.warnings.length - a.warnings.length)
+      .slice(0, topLimit)
+      .map((u) => ({
+        userId: u.userId,
+        lastTag: u.lastTag,
+        warningsCount: u.warnings.length,
+      }));
+
+    return {
+      trackedUsers: users.length,
+      totalRpSessions,
+      totalRpMessages,
+      totalWarnings,
+      totalBans,
+      totalKicks,
+      totalTimeouts,
+      totalBlacklists,
+      totalNotes,
+      topRpUsers,
+      topWarnedUsers,
+    };
   }
 }
 

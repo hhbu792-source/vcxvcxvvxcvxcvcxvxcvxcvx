@@ -362,15 +362,17 @@ async function runTests() {
   assert.strictEqual(cmds.length, 2);
   const defCmd = cmds.find((c) => c.name === "defender");
   const userLogCmd = cmds.find((c) => c.name === "user-log");
-  assert(defCmd && defCmd.options.length >= 20);
+  assert(defCmd && defCmd.options.length >= 22);
   assert(defCmd.options.some((o) => o.name === "blacklist"));
   assert(defCmd.options.some((o) => o.name === "blacklist-kaldir"));
   assert(defCmd.options.some((o) => o.name === "uyari-ver"));
   assert(defCmd.options.some((o) => o.name === "uyari-kaldir"));
   assert(defCmd.options.some((o) => o.name === "uyarilar"));
+  assert(defCmd.options.some((o) => o.name === "uyari-esik"));
   assert(defCmd.options.some((o) => o.name === "not-ekle"));
   assert(defCmd.options.some((o) => o.name === "not-sil"));
   assert(defCmd.options.some((o) => o.name === "rp-ekle"));
+  assert(defCmd.options.some((o) => o.name === "istatistik"));
   assert(!defCmd.options.some((o) => o.name === "karantina"));
   assert(userLogCmd && userLogCmd.options.some((o) => o.name === "id" && o.required));
   console.log(`[OK] Slash komutlari: /defender (${defCmd.options.length} alt komut) ve /user-log (admin + id) dogrulandi.`);
@@ -1108,7 +1110,68 @@ async function runTests() {
   defender.userLogManager.pruneExpired();
   console.log("[OK] Bugfix Regresyon Testleri: 8 kritik hata duzeltmesi (kasa koruma, davet bypass, audit eslesme, partial, kategori restore, timeout, hiyerarsi, bellek temizligi) dogrulandi.");
 
-  // 15. Forensic incident logs verified
+  // 15. Auto-escalation warning policy, pagination, and guild stats analytics
+  const escTarget = addMember({
+    id: "esc-warn-1",
+    username: "escwarn",
+    roleList: [modRole],
+  });
+  defender.store.setWarningPolicy(guild.id, {
+    enabled: true,
+    timeoutThreshold: 2,
+    timeoutMinutes: 15,
+    blacklistThreshold: 3,
+  });
+
+  const ew1 = await defender.userLogManager.warnUser(guild, escTarget.user, "Uyari 1", adminActor);
+  assert.strictEqual(ew1.escalation, null);
+
+  const ew2 = await defender.userLogManager.warnUser(guild, escTarget.user, "Uyari 2", adminActor);
+  assert(ew2.escalation && ew2.escalation.action === "timeout");
+  assert.strictEqual(escTarget.timeoutMs, 15 * 60 * 1000);
+
+  const ew3 = await defender.userLogManager.warnUser(guild, escTarget.user, "Uyari 3", adminActor);
+  assert(ew3.escalation && ew3.escalation.action === "blacklist");
+  assert.strictEqual(escTarget.roles.cache.has("1573704309034586286"), true);
+
+  // Disable warning policy back to default
+  defender.store.setWarningPolicy(guild.id, { enabled: false });
+
+  // Multi-page pagination test (> 8 warnings -> 2 pages + Row 3 pagination controls)
+  for (let i = 4; i <= 10; i++) {
+    await defender.userLogManager.warnUser(guild, escTarget.user, `Sayfa testi uyari ${i}`, adminActor);
+  }
+  const pagedDash1 = defender.userLogManager.buildUserLogDashboard({
+    guild,
+    targetId: escTarget.id,
+    discordUser: escTarget.user,
+    member: escTarget,
+    tab: "warnings",
+    page: 1,
+  });
+  assert.strictEqual(pagedDash1.components.length, 3);
+  assert.strictEqual(pagedDash1.components[2].components.length, 3);
+  assert(JSON.stringify(pagedDash1.embeds[0].toJSON()).includes("Sayfa 1/2"));
+
+  const pagedDash2 = defender.userLogManager.buildUserLogDashboard({
+    guild,
+    targetId: escTarget.id,
+    discordUser: escTarget.user,
+    member: escTarget,
+    tab: "warnings",
+    page: 2,
+  });
+  assert(JSON.stringify(pagedDash2.embeds[0].toJSON()).includes("Sayfa 2/2"));
+
+  // Guild stats embed check
+  const statsEmbed = defender.userLogManager.buildGuildStatsEmbed(guild);
+  const statsJson = JSON.stringify(statsEmbed.toJSON());
+  assert(statsJson.includes("En Aktif RP Oyuncuları"));
+  assert(statsJson.includes("En Çok Uyarı Alanlar"));
+  assert.strictEqual(emojiRegex.test(statsJson), false);
+  console.log("[OK] Kurumsal Ozellikler: Uyari esik politikasi, /user-log sayfalama ve /defender istatistik dogrulandi.");
+
+  // 16. Forensic incident logs verified
   assert(logCh._sent.length >= 8);
   const status = defender.getGuildStatus(guild);
   assert(status.incidentCount >= 8);

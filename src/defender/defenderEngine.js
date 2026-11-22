@@ -280,11 +280,13 @@ class DefenderEngine {
       punishmentMode: g.punishmentMode,
       logChannelId: g.logChannelId,
       blacklistRoleId: g.blacklistRoleId,
+      warningPolicy: { ...(g.warningPolicy || {}) },
       modules: { ...g.modules },
       thresholds: { ...g.thresholds },
       lockdownActive: Boolean(g.lockdown.active),
       raidModeActive: this.antiRaid.isRaidModeActive(guild.id),
       blacklistedCount: Object.keys(g.blacklistedUsers).length,
+      trackedUsersCount: this.userLogStore.getGuildStats(guild.id, 0).trackedUsers,
       whitelistCounts: {
         users: Object.keys(g.whitelist.users).length,
         roles: Object.keys(g.whitelist.roles).length,

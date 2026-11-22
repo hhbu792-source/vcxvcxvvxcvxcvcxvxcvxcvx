@@ -1,4 +1,5 @@
 const {
+  ActivityType,
   AttachmentBuilder,
   Client,
   EmbedBuilder,
@@ -9,12 +10,16 @@ const {
 } = require("discord.js");
 
 const config = require("./config");
+const { createLogger } = require("./defender/logger");
 const { DefenderEngine } = require("./defender/defenderEngine");
 const { deployCommands } = require("./deployCommands");
 
+const logger = createLogger("DEFENDER");
+const startedAt = Date.now();
+
 if (!config.token) {
-  console.error(
-    "[HATA] DISCORD_TOKEN bulunamadı. .env.example dosyasını .env olarak kopyalayıp bot token'ınızı girin."
+  logger.error(
+    "DISCORD_TOKEN bulunamadı. .env.example dosyasını .env olarak kopyalayıp bot token'ınızı girin."
   );
   process.exit(1);
 }
@@ -27,6 +32,7 @@ const defender = new DefenderEngine({
   rpCategoryName: config.rpCategoryName,
   rpSessionGapMs: config.rpSessionGapMs,
   snapshotIntervalMs: config.snapshotIntervalMs,
+  logger,
 });
 
 const client = new Client({
@@ -124,11 +130,13 @@ async function handleUserLogButton(interaction) {
 
   if (action === "tab" || action === "refresh") {
     const tab = parts[3] || "overview";
+    const page = Math.max(1, Number(parts[4]) || 1);
     await interaction.deferUpdate();
     const ctx = await fetchUserLogContext(interaction.guild, targetId);
     const dashboard = defender.userLogManager.buildUserLogDashboard({
       ...ctx,
       tab,
+      page,
     });
     await interaction.editReply(dashboard);
     return;
@@ -260,6 +268,7 @@ async function handleUserLogModal(interaction) {
       totalWarnings: res.totalWarnings,
       dmSent: res.dmSent,
       moderator: interaction.user,
+      escalation: res.escalation,
     });
 
     if (fromMsg) {
@@ -322,12 +331,23 @@ async function handleUserLogModal(interaction) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   const snapCount = defender.initializeGuilds(readyClient);
-  console.log("========================================");
-  console.log(`[DEFENDER] Bot aktif: ${readyClient.user.tag}`);
-  console.log(`[DEFENDER] Korunan sunucu sayisi : ${snapCount}`);
-  console.log(`[DEFENDER] Blacklist Rol ID      : ${config.blacklistRoleId}`);
-  console.log(`[DEFENDER] RP Takip Kategorisi   : ${config.rpCategoryName}`);
-  console.log("========================================");
+
+  readyClient.user.setPresence({
+    status: "online",
+    activities: [
+      {
+        name: "Sunucu Güvenliği | /defender",
+        type: ActivityType.Watching,
+      },
+    ],
+  });
+
+  logger.info("========================================");
+  logger.info(`Bot aktif              : ${readyClient.user.tag}`);
+  logger.info(`Korunan sunucu sayisi  : ${snapCount}`);
+  logger.info(`Blacklist Rol ID       : ${config.blacklistRoleId}`);
+  logger.info(`RP Takip Kategorisi    : ${config.rpCategoryName}`);
+  logger.info("========================================");
 
   try {
     const res = await deployCommands({
@@ -335,18 +355,18 @@ client.once(Events.ClientReady, async (readyClient) => {
       clientId: config.clientId || readyClient.user.id,
       guildId: config.guildId,
     });
-    console.log(
+    logger.info(
       res.scope === "guild"
-        ? `[DEPLOY] ${res.count} slash komutu sunucuya (${res.guildId}) senkronize edildi.`
-        : `[DEPLOY] ${res.count} slash komutu global olarak senkronize edildi.`
+        ? `Slash komutlari sunucuya (${res.guildId}) senkronize edildi (${res.count} komut).`
+        : `Slash komutlari global olarak senkronize edildi (${res.count} komut).`
     );
   } catch (err) {
-    console.error("[DEPLOY] Slash komutlari yuklenemedi:", err.message);
+    logger.error("Slash komutlari yuklenemedi:", err.message);
   }
 });
 
 client.on(Events.Error, (err) => {
-  console.error("[DISCORD CLIENT HATASI]", err.message);
+  logger.error("Discord client hatasi:", err.message);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -418,6 +438,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const coreProtectedSubs = new Set([
       "modul",
       "ceza",
+      "uyari-esik",
       "whitelist-ekle",
       "whitelist-cikar",
     ]);
@@ -471,35 +492,49 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? `${st.snapshot.roleCount} rol, ${st.snapshot.channelCount} kanal (<t:${Math.floor(st.snapshot.capturedAt / 1000)}:R>)`
         : "Henüz alınmadı";
 
+      const wp = st.warningPolicy || {};
+      const warnPolicyText = wp.enabled
+        ? `**AÇIK** (Timeout: ${wp.timeoutThreshold || "Kapalı"} uyarı / ${wp.timeoutMinutes || 60} dk | Blacklist: ${wp.blacklistThreshold || "Kapalı"} uyarı)`
+        : "**Kapalı** (`/defender uyari-esik` ile açılabilir)";
+
+      const pingMs =
+        typeof client.ws?.ping === "number" && client.ws.ping >= 0
+          ? `${Math.round(client.ws.ping)} ms`
+          : "Hesaplanıyor";
+
       const embed = new EmbedBuilder()
         .setColor(st.lockdownActive || st.raidModeActive ? 0xc0392b : 0x2c3e50)
         .setAuthor({ name: "Defender Güvenlik Motoru" })
         .setTitle(`Canlı Güvenlik Durumu - ${guild.name}`)
         .addFields(
           {
-            name: "Genel",
+            name: "Genel & Sağlık",
             value: [
               `Sistem: **${st.enabled ? "AKTİF" : "PASİF"}**`,
               `Ceza Modu: \`${st.punishmentMode}\``,
               `Acil Kilit: **${st.lockdownActive ? "AKTİF" : "Kapalı"}**`,
               `Raid Modu: **${st.raidModeActive ? "AKTİF" : "Normal"}**`,
+              `Gecikme: **${pingMs}** | Açılış: <t:${Math.floor(startedAt / 1000)}:R>`,
             ].join("\n"),
             inline: true,
           },
           {
-            name: "Kayıtlar",
+            name: "Kayıtlar & Sicil",
             value: [
               `Log Kanalı: ${st.logChannelId ? `<#${st.logChannelId}>` : "Ayarlanmadı"}`,
               `Blacklist Rolü: ${st.blacklistRoleId ? `<@&${st.blacklistRoleId}>` : "Ayarlanmadı"}`,
               `Blacklist'teki Üye: **${st.blacklistedCount}**`,
+              `Sicil Kayıtlı Üye: **${st.trackedUsersCount}**`,
               `Toplam Olay: **${st.incidentCount}**`,
             ].join("\n"),
             inline: true,
           },
           {
-            name: "Whitelist & Yedek",
+            name: "Uyarı Kademe Politikası & Yedek",
             value: [
-              `Kullanıcı: ${st.whitelistCounts.users} | Rol: ${st.whitelistCounts.roles} | Bot: ${st.whitelistCounts.bots}`,
+              `Otomatik Uyarı Eşiği: ${warnPolicyText}`,
+              `RP Takip Kategorisi: \`${config.rpCategoryName}\``,
+              `Whitelist: Kullanıcı ${st.whitelistCounts.users} | Rol ${st.whitelistCounts.roles} | Bot ${st.whitelistCounts.bots}`,
               `Son Yedek: ${snapText}`,
             ].join("\n"),
             inline: false,
@@ -864,6 +899,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         totalWarnings: res.totalWarnings,
         dmSent: res.dmSent,
         moderator: interaction.user,
+        escalation: res.escalation,
       });
 
       await interaction.editReply({ embeds: [confirmEmbed] });
@@ -994,6 +1030,82 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (sub === "uyari-esik") {
+      const enabled = interaction.options.getBoolean("aktif", true);
+      const timeoutThreshold = interaction.options.getInteger(
+        "timeout_sinir",
+        false
+      );
+      const timeoutMinutes = interaction.options.getInteger(
+        "timeout_dakika",
+        false
+      );
+      const blacklistThreshold = interaction.options.getInteger(
+        "blacklist_sinir",
+        false
+      );
+
+      const policy = defender.store.setWarningPolicy(guild.id, {
+        enabled,
+        ...(timeoutThreshold !== null ? { timeoutThreshold } : {}),
+        ...(timeoutMinutes !== null ? { timeoutMinutes } : {}),
+        ...(blacklistThreshold !== null ? { blacklistThreshold } : {}),
+      });
+
+      await defender.punishmentEngine.logIncident(guild, {
+        module: "CONFIG",
+        severity: "INFO",
+        action: "Uyarı Kademe Politikası Güncellendi",
+        executorId: interaction.user.id,
+        target: policy.enabled ? "AÇIK" : "KAPALI",
+        details: `Timeout eşiği: ${policy.timeoutThreshold} (${policy.timeoutMinutes} dk) | Blacklist eşiği: ${policy.blacklistThreshold}`,
+      });
+
+      const embed = new EmbedBuilder()
+        .setColor(policy.enabled ? 0x2ecc71 : 0x34495e)
+        .setAuthor({ name: "Defender Moderasyon Politikası" })
+        .setTitle("Otomatik Uyarı Eşiği Güncellendi")
+        .addFields(
+          {
+            name: "Durum",
+            value: policy.enabled ? "**AÇIK**" : "**KAPALI**",
+            inline: true,
+          },
+          {
+            name: "Timeout Eşiği",
+            value:
+              policy.timeoutThreshold > 0
+                ? `**${policy.timeoutThreshold}** uyarı -> **${policy.timeoutMinutes} dk**`
+                : "Kapalı",
+            inline: true,
+          },
+          {
+            name: "Blacklist Eşiği",
+            value:
+              policy.blacklistThreshold > 0
+                ? `**${policy.blacklistThreshold}** uyarı -> Blacklist`
+                : "Kapalı",
+            inline: true,
+          }
+        )
+        .setTimestamp();
+
+      await interaction.reply({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === "istatistik") {
+      const embed = defender.userLogManager.buildGuildStatsEmbed(guild);
+      await interaction.reply({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     if (sub === "yedek") {
       const snap = defender.snapshotManager.captureGuild(guild);
       await interaction.reply({
@@ -1034,7 +1146,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
   } catch (err) {
-    console.error("[DEFENDER ETKILESIM HATASI]", err);
+    logger.error("Etkilesim hatasi:", err);
     const msg =
       "İşlem çalıştırılırken hata oluştu. Botun en üstte yer alan bir Yönetici rolüne sahip olduğundan emin olun.";
     if (interaction.replied && !interaction.deferred) {
@@ -1052,15 +1164,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("[UNHANDLED REJECTION]", reason);
+  logger.error("UNHANDLED REJECTION:", reason);
 });
 
 process.on("uncaughtException", (err) => {
-  console.error("[UNCAUGHT EXCEPTION]", err);
+  logger.error("UNCAUGHT EXCEPTION:", err);
 });
 
 function handleShutdown(signal) {
-  console.log(`[DEFENDER] ${signal} alindi, kapatiliyor...`);
+  logger.info(`${signal} alindi, kapatiliyor...`);
   defender.shutdown();
   client.destroy();
   process.exit(0);

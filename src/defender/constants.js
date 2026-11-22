@@ -83,6 +83,12 @@ function createDefaultGuildSettings() {
       bots: {},
     },
     blacklistedUsers: {},
+    warningPolicy: {
+      enabled: false,
+      timeoutThreshold: 3,
+      timeoutMinutes: 60,
+      blacklistThreshold: 5,
+    },
     lockdown: {
       active: false,
       activatedAt: null,

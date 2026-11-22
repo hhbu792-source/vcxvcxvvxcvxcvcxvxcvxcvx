@@ -33,6 +33,10 @@ function mergeDefaults(target, defaults) {
   }
   delete result.quarantinedUsers;
   delete result.quarantineRoleId;
+  result.warningPolicy = {
+    ...defaults.warningPolicy,
+    ...(target?.warningPolicy || {}),
+  };
   result.lockdown = {
     ...defaults.lockdown,
     ...(target?.lockdown || {}),
@@ -77,6 +81,16 @@ class DefenderStore {
       }
     } catch (err) {
       console.error("[DEFENDER STORE] Durum dosyasi yuklenemedi:", err.message);
+      try {
+        if (fs.existsSync(this.filePath)) {
+          fs.copyFileSync(
+            this.filePath,
+            `${this.filePath}.corrupt-${Date.now()}.bak`
+          );
+        }
+      } catch {
+        // Ignore backup failure
+      }
     }
   }
 
@@ -129,6 +143,25 @@ class DefenderStore {
     const g = this.getGuild(guildId);
     g.blacklistRoleId = roleId;
     this.save();
+  }
+
+  setWarningPolicy(guildId, patch = {}) {
+    const g = this.getGuild(guildId);
+    g.warningPolicy = {
+      ...g.warningPolicy,
+      ...(patch.enabled !== undefined ? { enabled: Boolean(patch.enabled) } : {}),
+      ...(patch.timeoutThreshold !== undefined
+        ? { timeoutThreshold: Math.max(0, Math.trunc(Number(patch.timeoutThreshold) || 0)) }
+        : {}),
+      ...(patch.timeoutMinutes !== undefined
+        ? { timeoutMinutes: Math.max(1, Math.min(40320, Math.trunc(Number(patch.timeoutMinutes) || 60))) }
+        : {}),
+      ...(patch.blacklistThreshold !== undefined
+        ? { blacklistThreshold: Math.max(0, Math.trunc(Number(patch.blacklistThreshold) || 0)) }
+        : {}),
+    };
+    this.save();
+    return g.warningPolicy;
   }
 
   setThreshold(guildId, key, value) {

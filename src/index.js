@@ -149,6 +149,14 @@ async function handleUserLogButton(interaction) {
       });
       return;
     }
+    const targetUser = await client.users.fetch(targetId).catch(() => null);
+    if (targetUser?.bot) {
+      await interaction.reply({
+        content: "Bot hesaplarına uyarı verilemez.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     const modal = defender.userLogManager.buildQuickWarnModal(targetId);
     await interaction.showModal(modal);
     return;
@@ -755,6 +763,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
         interaction.user.id
       );
       if (!res.ok) {
+        if (
+          res.reason === "ROLE_HIERARCHY_BLOCKED" ||
+          res.reason === "ROLE_ASSIGN_FAILED"
+        ) {
+          await interaction.editReply(
+            `Botun rolü <@&${res.blacklistRoleId}> rolünün altında kaldığı veya yetkisi yetersiz olduğu için Blacklist rolü verilemedi. Bot rolünü bu rolün üstüne taşıyın.`
+          );
+          return;
+        }
         await interaction.editReply(
           "Bu kullanıcı blacklist'e alınamadı (bot rol hiyerarşisi veya sunucu sahibi)."
         );
@@ -1020,7 +1037,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     console.error("[DEFENDER ETKILESIM HATASI]", err);
     const msg =
       "İşlem çalıştırılırken hata oluştu. Botun en üstte yer alan bir Yönetici rolüne sahip olduğundan emin olun.";
-    if (interaction.deferred || interaction.replied) {
+    if (interaction.replied && !interaction.deferred) {
+      await interaction
+        .followUp({ content: msg, flags: MessageFlags.Ephemeral })
+        .catch(() => {});
+    } else if (interaction.deferred) {
       await interaction.editReply({ content: msg }).catch(() => {});
     } else {
       await interaction

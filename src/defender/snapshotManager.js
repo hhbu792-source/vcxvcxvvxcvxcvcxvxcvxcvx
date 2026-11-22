@@ -55,6 +55,14 @@ class SnapshotManager {
     return true;
   }
 
+  pruneExpired(now = Date.now()) {
+    for (const [key, exp] of this.selfActions.entries()) {
+      if (now > exp) {
+        this.selfActions.delete(key);
+      }
+    }
+  }
+
   captureGuild(guild) {
     if (!guild) return null;
 
@@ -192,20 +200,32 @@ class SnapshotManager {
       reason: "Defender Anti-Nuke: Silinen kanal otomatik geri yuklendi",
     };
 
-    if (parentId && type !== ChannelType.GuildCategory) {
+    const isCategory = type === ChannelType.GuildCategory;
+    const supportsTopic =
+      type === ChannelType.GuildText ||
+      type === ChannelType.GuildAnnouncement ||
+      type === ChannelType.GuildForum;
+
+    if (parentId && !isCategory) {
       createPayload.parent = parentId;
     }
     if (validOverwrites.length > 0) {
       createPayload.permissionOverwrites = validOverwrites;
     }
-    if (saved?.topic || deletedChannel.topic) {
+    if (supportsTopic && (saved?.topic || deletedChannel.topic)) {
       createPayload.topic = saved?.topic || deletedChannel.topic;
     }
-    if (typeof (saved?.rateLimitPerUser ?? deletedChannel.rateLimitPerUser) === "number") {
+    if (
+      !isCategory &&
+      typeof (saved?.rateLimitPerUser ?? deletedChannel.rateLimitPerUser) === "number"
+    ) {
       createPayload.rateLimitPerUser =
         saved?.rateLimitPerUser ?? deletedChannel.rateLimitPerUser;
     }
-    if (typeof (saved?.nsfw ?? deletedChannel.nsfw) === "boolean") {
+    if (
+      !isCategory &&
+      typeof (saved?.nsfw ?? deletedChannel.nsfw) === "boolean"
+    ) {
       createPayload.nsfw = saved?.nsfw ?? deletedChannel.nsfw;
     }
     if (

@@ -984,7 +984,131 @@ async function runTests() {
   assert.strictEqual(emojiRegex.test(reportTxt), false);
   console.log("[OK] Uyari Sistemi & Profesyonel /user-log: 5 sekme, risk skoru, modallar, yetkili notlari ve .txt rapor dogrulandi.");
 
-  // 14. Forensic incident logs verified
+  // 14. Regression tests for critical bugfixes
+  // 14a. Multi-invite vanity bypass must be caught
+  const multiInv = detectExternalInvite(
+    "bizimki discord.gg/backrooms-tr ama buraya gel discord.gg/korsan123",
+    guild
+  );
+  assert(multiInv && multiInv.code === "korsan123");
+
+  // 14b. Double-blacklisting an already blacklisted member must preserve original vaulted roles!
+  const vaultVictim = addMember({
+    id: "vault-victim-1",
+    username: "vaultvictim",
+    roleList: [modRole],
+  });
+  const firstBl = await defender.punishmentEngine.blacklistMember(
+    guild,
+    vaultVictim,
+    "Ilk blacklist",
+    "Admin"
+  );
+  assert.strictEqual(firstBl.ok, true);
+  assert.strictEqual(firstBl.removedRolesCount, 1);
+
+  const secondBl = await defender.punishmentEngine.blacklistMember(
+    guild,
+    vaultVictim,
+    "Tekrar blacklist",
+    "Admin"
+  );
+  assert.strictEqual(secondBl.ok, true);
+  assert.strictEqual(secondBl.removedRolesCount, 1);
+
+  const restoredVault = await defender.punishmentEngine.unblacklistMember(
+    guild,
+    vaultVictim,
+    "Admin"
+  );
+  assert.strictEqual(restoredVault.ok, true);
+  assert.strictEqual(restoredVault.restoredCount, 1);
+  assert.strictEqual(vaultVictim.roles.cache.has(modRole.id), true);
+
+  // 14c. Anti-Nuke findAuditEntry must NOT match null targetId when targetId is requested
+  addAudit(AuditLogEvent.ChannelDelete, "innocent-admin", null);
+  const badAudit = await defender.antiNuke.findAuditEntry(
+    guild,
+    AuditLogEvent.ChannelDelete,
+    "ch-nonexistent-999"
+  );
+  assert.strictEqual(badAudit, null);
+
+  // 14d. Partial oldMember must NOT falsely record timeout or blacklist role change
+  const partialUpdateRes = await defender.userLogManager.onGuildMemberUpdate(
+    { partial: true, id: player.id, guild, user: player.user },
+    {
+      id: player.id,
+      guild,
+      user: player.user,
+      communicationDisabledUntilTimestamp: Date.now() + 300_000,
+      roles: player.roles,
+    }
+  );
+  assert.strictEqual(partialUpdateRes.recorded, false);
+
+  // 14e. Category auto-restore must NOT include invalid Discord API fields (topic, rateLimitPerUser, nsfw)
+  const origCreate = guild.channels.create;
+  let capturedCatPayload = null;
+  guild.channels.create = async (payload) => {
+    capturedCatPayload = payload;
+    return origCreate(payload);
+  };
+  await defender.snapshotManager.restoreDeletedChannel(guild, {
+    id: "cat-del-1",
+    name: "DENEME KATEGORI",
+    type: ChannelType.GuildCategory,
+    topic: "invalid-for-cat",
+    rateLimitPerUser: 5,
+    nsfw: false,
+  });
+  guild.channels.create = origCreate;
+  assert(capturedCatPayload);
+  assert.strictEqual("topic" in capturedCatPayload, false);
+  assert.strictEqual("rateLimitPerUser" in capturedCatPayload, false);
+  assert.strictEqual("nsfw" in capturedCatPayload, false);
+
+  // 14f. Failed timeout must NOT log a false timeout in userLogStore
+  const failToUser = addMember({ id: "fail-to-1", username: "failto" });
+  failToUser.timeout = async () => {
+    throw new Error("Missing Permissions");
+  };
+  await defender.chatDefense.onMessageCreate(
+    createChatMsg(liveSohbet, failToUser, "gel discord.gg/reklam1")
+  );
+  const failToRes = await defender.chatDefense.onMessageCreate(
+    createChatMsg(liveSohbet, failToUser, "gel discord.gg/reklam2")
+  );
+  assert.strictEqual(failToRes.actionTaken, "delete_warn");
+  const failToRec = defender.userLogStore.peekUser(guild.id, failToUser.id);
+  assert.strictEqual(failToRec.timeouts.length, 0);
+
+  // 14g. Blacklist role hierarchy block must fail cleanly WITHOUT stripping roles
+  const origBlPos = configuredBlRole.position;
+  configuredBlRole.position = 999; // Higher than botTopRole (90)
+  const hierUser = addMember({
+    id: "hier-user-1",
+    username: "hieruser",
+    roleList: [modRole],
+  });
+  const hierRes = await defender.punishmentEngine.blacklistMember(
+    guild,
+    hierUser,
+    "Hiyerarsi testi",
+    "Admin"
+  );
+  configuredBlRole.position = origBlPos;
+  assert.strictEqual(hierRes.ok, false);
+  assert.strictEqual(hierRes.reason, "ROLE_HIERARCHY_BLOCKED");
+  assert.strictEqual(hierUser.roles.cache.has(modRole.id), true);
+
+  // 14h. Periodic pruneExpired runs cleanly
+  defender.snapshotManager.pruneExpired();
+  defender.punishmentEngine.pruneExpired();
+  defender.userLogManager.pruneExpired();
+  console.log("[OK] Bugfix Regresyon Testleri: 8 kritik hata duzeltmesi (kasa koruma, davet bypass, audit eslesme, partial, kategori restore, timeout, hiyerarsi, bellek temizligi) dogrulandi.");
+
+  // 15. Forensic incident logs verified
   assert(logCh._sent.length >= 8);
   const status = defender.getGuildStatus(guild);
   assert(status.incidentCount >= 8);

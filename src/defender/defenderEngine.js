@@ -113,6 +113,9 @@ class DefenderEngine {
       this.antiNuke.tracker.pruneAll();
       this.antiRaid.tracker.pruneAll();
       this.chatDefense.tracker.pruneAll();
+      this.snapshotManager.pruneExpired();
+      this.punishmentEngine.pruneExpired();
+      this.userLogManager.pruneExpired();
     }, 5 * 60 * 1000);
     if (typeof this._pruneTimer.unref === "function") {
       this._pruneTimer.unref();
@@ -253,9 +256,13 @@ class DefenderEngine {
       });
     });
 
-    client.on(Events.MessageUpdate, (_oldMsg, newMsg) => {
-      // Prevent editing a clean message into a phishing link / invite / token leak
+    client.on(Events.MessageUpdate, (oldMsg, newMsg) => {
+      // Prevent editing a clean message into a phishing link / invite / token leak,
+      // while ignoring Discord link-embed unfurl updates where content did not change.
       if (!newMsg || newMsg.partial) return;
+      if (oldMsg && !oldMsg.partial && oldMsg.content === newMsg.content) {
+        return;
+      }
       this.chatDefense
         .onMessageCreate(newMsg, { isEdit: true })
         .catch((err) => {

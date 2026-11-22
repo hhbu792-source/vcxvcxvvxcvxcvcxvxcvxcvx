@@ -36,6 +36,14 @@ class PunishmentEngine {
     this.recentPunishments = new Map();
   }
 
+  pruneExpired(maxAgeMs = 60_000, now = Date.now()) {
+    for (const [key, ts] of this.recentPunishments.entries()) {
+      if (now - ts > maxAgeMs) {
+        this.recentPunishments.delete(key);
+      }
+    }
+  }
+
   _canActOnMember(guild, targetMember) {
     if (!guild || !targetMember) return false;
     if (targetMember.id === guild.ownerId) return false;
@@ -231,25 +239,56 @@ class PunishmentEngine {
     }
 
     const blRole = await this.ensureBlacklistRole(guild);
+    const me = guild.members?.me;
+    const myPos = me?.roles?.highest?.position ?? 9999;
+    if (me && typeof blRole.position === "number" && blRole.position >= myPos) {
+      return {
+        ok: false,
+        reason: "ROLE_HIERARCHY_BLOCKED",
+        blacklistRoleId: blRole.id,
+      };
+    }
+
+    // Preserve previously vaulted roles if member is already blacklisted (prevents vault wipe on re-blacklist)
+    const g = this.store.getGuild(guild.id);
+    const existingRecord = g.blacklistedUsers?.[member.id] || null;
+    const prevVaultRoles = Array.isArray(existingRecord?.previousRoles)
+      ? existingRecord.previousRoles.filter((id) => id !== blRole.id)
+      : [];
+
     const removedRoles = await this.stripRemovableRoles(
       guild,
       member,
       `Defender Blacklist: ${reason}`
     );
 
-    const savedRoles = removedRoles.filter((id) => id !== blRole.id);
+    const newlySavedRoles = removedRoles.filter((id) => id !== blRole.id);
+    const savedRoles = [
+      ...new Set([...prevVaultRoles, ...newlySavedRoles]),
+    ];
+
+    let roleAssigned = true;
+    if (member.roles?.add) {
+      this.snapshotManager.markSelfAction(`memberUpdate:${member.id}`, 10_000);
+      roleAssigned = await member.roles
+        .add(blRole.id, `Defender Blacklist: ${reason}`)
+        .then(() => true)
+        .catch(() => false);
+    }
+
+    if (!roleAssigned) {
+      return {
+        ok: false,
+        reason: "ROLE_ASSIGN_FAILED",
+        blacklistRoleId: blRole.id,
+      };
+    }
+
     this.store.saveBlacklistedUser(guild.id, member.id, {
       previousRoles: savedRoles,
       reason,
       actor: actorTag,
     });
-
-    if (member.roles?.add) {
-      this.snapshotManager.markSelfAction(`memberUpdate:${member.id}`, 10_000);
-      await member.roles
-        .add(blRole.id, `Defender Blacklist: ${reason}`)
-        .catch(() => {});
-    }
 
     if (this.userLogManager) {
       this.userLogManager.recordDirectBlacklist(guild.id, member.id, {

@@ -33,6 +33,20 @@ class AntiNukeEngine {
     this.tracker = new ActionWindowTracker();
     this.auditLogDelayMs = options.auditLogDelayMs ?? 250;
     this.logger = options.logger || console;
+    /** @type {Set<string>} */
+    this._processedAuditIds = new Set();
+  }
+
+  _claimAuditEntry(entry) {
+    if (!entry?.id) return true;
+    const id = String(entry.id);
+    if (this._processedAuditIds.has(id)) return false;
+    this._processedAuditIds.add(id);
+    if (this._processedAuditIds.size > 1000) {
+      const first = this._processedAuditIds.values().next().value;
+      if (first) this._processedAuditIds.delete(first);
+    }
+    return true;
   }
 
   _isActive(guild) {
@@ -55,8 +69,11 @@ class AntiNukeEngine {
       const now = Date.now();
       for (const entry of logs.entries.values()) {
         if (now - entry.createdTimestamp > maxAgeMs) continue;
-        if (targetId && entry.targetId && entry.targetId !== targetId) {
-          continue;
+        if (targetId) {
+          const entryTargetId = entry.targetId || entry.target?.id;
+          if (String(entryTargetId || "") !== String(targetId)) {
+            continue;
+          }
         }
         return entry;
       }
@@ -296,7 +313,9 @@ class AntiNukeEngine {
     }
 
     const g = this.store.getGuild(guild.id);
-    const isBlacklistRole = g.blacklistRoleId === role.id;
+    const isBlacklistRole =
+      role.id === g.blacklistRoleId ||
+      role.id === this.punishmentEngine.blacklistRoleId;
     const key = `${guild.id}:roleDel:${executorId}`;
     const res = this.tracker.record(
       key,
@@ -329,8 +348,14 @@ class AntiNukeEngine {
         );
         if (recreated) {
           restoredNames.push(recreated.name);
-          if (rObj.id === g.blacklistRoleId) {
+          if (
+            rObj.id === g.blacklistRoleId ||
+            rObj.id === this.punishmentEngine.blacklistRoleId
+          ) {
             this.store.setBlacklistRole(guild.id, recreated.id);
+            if (rObj.id === this.punishmentEngine.blacklistRoleId) {
+              this.punishmentEngine.blacklistRoleId = recreated.id;
+            }
           }
         }
       }
@@ -443,7 +468,9 @@ class AntiNukeEngine {
     );
 
     const g = this.store.getGuild(guild.id);
-    const isBlacklistTamper = g.blacklistRoleId === newRole.id;
+    const isBlacklistTamper =
+      newRole.id === g.blacklistRoleId ||
+      newRole.id === this.punishmentEngine.blacklistRoleId;
 
     if (addedDangerous.length === 0 && !isBlacklistTamper) {
       return { triggered: false };
@@ -505,7 +532,7 @@ class AntiNukeEngine {
       return { triggered: false, skipped: "self" };
     }
 
-    if (!oldMember?.roles?.cache || !newMember?.roles?.cache) {
+    if (!oldMember || oldMember.partial || !oldMember.roles?.cache || !newMember?.roles?.cache) {
       return { triggered: false };
     }
 
@@ -577,7 +604,8 @@ class AntiNukeEngine {
       AuditLogEvent.MemberBanAdd,
       targetId
     );
-    const executorId = entry?.executorId || entry?.executor?.id;
+    if (!entry || !this._claimAuditEntry(entry)) return { triggered: false };
+    const executorId = entry.executorId || entry.executor?.id;
     if (!executorId) return { triggered: false };
 
     if (this.store.isWhitelisted(guild, executorId, "antiNuke")) {
@@ -627,7 +655,8 @@ class AntiNukeEngine {
       member.id,
       8_000
     );
-    const executorId = entry?.executorId || entry?.executor?.id;
+    if (!entry || !this._claimAuditEntry(entry)) return { triggered: false };
+    const executorId = entry.executorId || entry.executor?.id;
     if (!executorId) return { triggered: false };
 
     if (this.store.isWhitelisted(guild, executorId, "antiNuke")) {
@@ -852,7 +881,8 @@ class AntiNukeEngine {
       null,
       10_000
     );
-    const executorId = entry?.executorId || entry?.executor?.id;
+    if (!entry || !this._claimAuditEntry(entry)) return { triggered: false };
+    const executorId = entry.executorId || entry.executor?.id;
     if (!executorId) return { triggered: false };
 
     if (this.store.isWhitelisted(guild, executorId, "antiNuke")) {

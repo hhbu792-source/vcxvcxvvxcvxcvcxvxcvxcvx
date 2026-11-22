@@ -8,7 +8,7 @@ const WEBHOOK_LEAK_RE =
   /https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[A-Za-z0-9_-]{20,}/i;
 
 const INVITE_RE =
-  /(?:https?:\/\/)?(?:www\.)?(?:discord\s*\.\s*gg|discord(?:app)?\s*\.\s*com\s*\/\s*invite|dsc\s*\.\s*gg|invite\s*\.\s*gg)\s*\/\s*([a-zA-Z0-9-]{2,32})/i;
+  /(?:https?:\/\/)?(?:www\.)?(?:discord\s*\.\s*gg|discord(?:app)?\s*\.\s*com\s*\/\s*invite|dsc\s*\.\s*gg|invite\s*\.\s*gg)\s*\/\s*([a-zA-Z0-9-]{2,32})/gi;
 
 const URL_RE = /https?:\/\/[^\s<>()]+/gi;
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
@@ -90,16 +90,19 @@ function detectPhishing(content) {
 }
 
 function detectExternalInvite(content, guild) {
-  const m = content.match(INVITE_RE);
-  if (!m) return null;
-  const code = m[1];
-  if (
-    guild?.vanityURLCode &&
-    code.toLowerCase() === guild.vanityURLCode.toLowerCase()
-  ) {
-    return null;
+  INVITE_RE.lastIndex = 0;
+  let m;
+  while ((m = INVITE_RE.exec(content)) !== null) {
+    const code = m[1];
+    if (
+      guild?.vanityURLCode &&
+      code.toLowerCase() === guild.vanityURLCode.toLowerCase()
+    ) {
+      continue;
+    }
+    return { code };
   }
-  return { code };
+  return null;
 }
 
 class ChatDefenseEngine {
@@ -172,12 +175,14 @@ class ChatDefenseEngine {
         `<@${userId}> tekrarlayan güvenlik ihlalleri nedeniyle blacklist'e alındı (${reason}).`
       );
     } else if (totalStrikes === 3) {
+      let timedOut = false;
       if (message.member && typeof message.member.timeout === "function") {
-        await message.member
+        timedOut = await message.member
           .timeout(10 * 60 * 1000, `[Defender/${module}] ${reason}`)
-          .catch(() => {});
+          .then(() => true)
+          .catch(() => false);
       }
-      if (this.userLogManager) {
+      if (timedOut && this.userLogManager) {
         this.userLogManager.recordDirectTimeout(guild.id, userId, {
           durationMs: 10 * 60 * 1000,
           reason: `[${module}] ${reason}`,
@@ -185,18 +190,22 @@ class ChatDefenseEngine {
           tag: message.author?.tag || message.author?.username || null,
         });
       }
-      actionTaken = "timeout_10m";
+      actionTaken = timedOut ? "timeout_10m" : "delete_warn";
       await this._sendTempWarn(
         message.channel,
-        `<@${userId}> 10 dakika susturuldu. Sebep: ${reason} (İhlal: 3/4)`
+        timedOut
+          ? `<@${userId}> 10 dakika susturuldu. Sebep: ${reason} (İhlal: 3/4)`
+          : `<@${userId}> mesajınız engellendi. Sebep: ${reason} (İhlal: 3/4)`
       );
     } else if (totalStrikes === 2) {
+      let timedOut = false;
       if (message.member && typeof message.member.timeout === "function") {
-        await message.member
+        timedOut = await message.member
           .timeout(60 * 1000, `[Defender/${module}] ${reason}`)
-          .catch(() => {});
+          .then(() => true)
+          .catch(() => false);
       }
-      if (this.userLogManager) {
+      if (timedOut && this.userLogManager) {
         this.userLogManager.recordDirectTimeout(guild.id, userId, {
           durationMs: 60 * 1000,
           reason: `[${module}] ${reason}`,
@@ -204,10 +213,12 @@ class ChatDefenseEngine {
           tag: message.author?.tag || message.author?.username || null,
         });
       }
-      actionTaken = "timeout_1m";
+      actionTaken = timedOut ? "timeout_1m" : "delete_warn";
       await this._sendTempWarn(
         message.channel,
-        `<@${userId}> 1 dakika susturuldu. Sebep: ${reason} (İhlal: 2/4)`
+        timedOut
+          ? `<@${userId}> 1 dakika susturuldu. Sebep: ${reason} (İhlal: 2/4)`
+          : `<@${userId}> mesajınız engellendi. Sebep: ${reason} (İhlal: 2/4)`
       );
     } else {
       await this._sendTempWarn(

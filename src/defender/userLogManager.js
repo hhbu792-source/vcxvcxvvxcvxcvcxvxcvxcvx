@@ -158,6 +158,15 @@ class UserLogManager {
     this._recentBans = new Map();
   }
 
+  pruneExpired(now = Date.now()) {
+    for (const [k, exp] of this._directMarks.entries()) {
+      if (exp <= now) this._directMarks.delete(k);
+    }
+    for (const [k, ts] of this._recentBans.entries()) {
+      if (now - ts > 60_000) this._recentBans.delete(k);
+    }
+  }
+
   _markDirect(key, ttlMs = 8000) {
     this._directMarks.set(key, Date.now() + ttlMs);
     if (this._directMarks.size > 500) {
@@ -378,7 +387,13 @@ class UserLogManager {
   }
 
   async onGuildMemberUpdate(oldMember, newMember) {
-    if (!newMember || !newMember.guild || newMember.user?.bot) {
+    if (
+      !oldMember ||
+      oldMember.partial ||
+      !newMember ||
+      !newMember.guild ||
+      newMember.user?.bot
+    ) {
       return { recorded: false };
     }
     const guild = newMember.guild;
@@ -386,7 +401,7 @@ class UserLogManager {
     const results = [];
 
     // 1. Timeout detection
-    const oldUntil = oldMember?.communicationDisabledUntilTimestamp || 0;
+    const oldUntil = oldMember.communicationDisabledUntilTimestamp || 0;
     const newUntil = newMember.communicationDisabledUntilTimestamp || 0;
     const now = Date.now();
     if (newUntil > now && newUntil !== oldUntil) {
@@ -396,16 +411,18 @@ class UserLogManager {
           AuditLogEvent.MemberUpdate,
           userId
         );
-        const entry = this.store.recordTimeout(guild.id, userId, {
-          reason: audit?.reason || "Susturma (Timeout)",
-          durationMs: Math.max(0, newUntil - now),
-          until: newUntil,
-          moderatorId: audit?.executorId || audit?.executor?.id || null,
-          moderatorTag:
-            audit?.executor?.tag || audit?.executor?.username || "Bilinmiyor",
-          tag: newMember.user?.tag || newMember.user?.username || null,
-        });
-        results.push({ type: "timeout", entry });
+        if (!audit || !this._rememberAuditId(audit.id)) {
+          const entry = this.store.recordTimeout(guild.id, userId, {
+            reason: audit?.reason || "Susturma (Timeout)",
+            durationMs: Math.max(0, newUntil - now),
+            until: newUntil,
+            moderatorId: audit?.executorId || audit?.executor?.id || null,
+            moderatorTag:
+              audit?.executor?.tag || audit?.executor?.username || "Bilinmiyor",
+            tag: newMember.user?.tag || newMember.user?.username || null,
+          });
+          results.push({ type: "timeout", entry });
+        }
       }
     }
 
@@ -414,7 +431,7 @@ class UserLogManager {
     const blRoleIds = new Set(
       [this.blacklistRoleId, g?.blacklistRoleId].filter(Boolean)
     );
-    if (blRoleIds.size > 0 && oldMember?.roles?.cache && newMember?.roles?.cache) {
+    if (blRoleIds.size > 0 && oldMember.roles?.cache && newMember.roles?.cache) {
       const oldHad = [...blRoleIds].some((id) => oldMember.roles.cache.has(id));
       const newHas = [...blRoleIds].some((id) => newMember.roles.cache.has(id));
 
@@ -425,15 +442,17 @@ class UserLogManager {
             AuditLogEvent.MemberRoleUpdate,
             userId
           );
-          const entry = this.store.recordBlacklist(guild.id, userId, {
-            action: "add",
-            reason: audit?.reason || "Blacklist rolü verildi",
-            moderatorId: audit?.executorId || audit?.executor?.id || null,
-            moderatorTag:
-              audit?.executor?.tag || audit?.executor?.username || "Bilinmiyor",
-            tag: newMember.user?.tag || newMember.user?.username || null,
-          });
-          results.push({ type: "blacklist_add", entry });
+          if (!audit || !this._rememberAuditId(audit.id)) {
+            const entry = this.store.recordBlacklist(guild.id, userId, {
+              action: "add",
+              reason: audit?.reason || "Blacklist rolü verildi",
+              moderatorId: audit?.executorId || audit?.executor?.id || null,
+              moderatorTag:
+                audit?.executor?.tag || audit?.executor?.username || "Bilinmiyor",
+              tag: newMember.user?.tag || newMember.user?.username || null,
+            });
+            results.push({ type: "blacklist_add", entry });
+          }
         }
       } else if (oldHad && !newHas) {
         if (!this._consumeDirect(`blacklist:remove:${guild.id}:${userId}`)) {
@@ -442,15 +461,17 @@ class UserLogManager {
             AuditLogEvent.MemberRoleUpdate,
             userId
           );
-          const entry = this.store.recordBlacklist(guild.id, userId, {
-            action: "remove",
-            reason: audit?.reason || "Blacklist rolü kaldırıldı",
-            moderatorId: audit?.executorId || audit?.executor?.id || null,
-            moderatorTag:
-              audit?.executor?.tag || audit?.executor?.username || "Bilinmiyor",
-            tag: newMember.user?.tag || newMember.user?.username || null,
-          });
-          results.push({ type: "blacklist_remove", entry });
+          if (!audit || !this._rememberAuditId(audit.id)) {
+            const entry = this.store.recordBlacklist(guild.id, userId, {
+              action: "remove",
+              reason: audit?.reason || "Blacklist rolü kaldırıldı",
+              moderatorId: audit?.executorId || audit?.executor?.id || null,
+              moderatorTag:
+                audit?.executor?.tag || audit?.executor?.username || "Bilinmiyor",
+              tag: newMember.user?.tag || newMember.user?.username || null,
+            });
+            results.push({ type: "blacklist_remove", entry });
+          }
         }
       }
     }

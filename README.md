@@ -36,10 +36,20 @@ Sunucu koruma (Guard) odaklı, çok katmanlı **Defender Sistemi**.
    - Acil kilitte her kanalın mevcut `@everyone` izinleri kaydedilir; `/defender kilit-kaldir` ile eski izinler aynen geri yüklenir
    - Her güvenlik olayı `#INC-1`, `#INC-2` şeklinde numaralandırılarak `#defender-log` kanalına kaydedilir
 
-## Slash Komutları (`/defender`)
+6. **Uyarı Sistemi & Kullanıcı Sicil / RP Kaydı (`src/defender/userLogManager.js`, `src/defender/userLogStore.js`)**
+   - `/defender uyari-ver`, `/defender uyari-kaldir` ve `/defender uyarilar` ile üyelere DM bildirimli resmi uyarı verme ve yönetme
+   - `/user-log <id>` admin komutu ile Discord ID üzerinden (sunucuda olmayan/banlı üyeler dahil) kişinin katıldığı **RP sayısı**, **uyarıları**, **banları**, **kickleri**, **timeoutları**, **blacklist geçmişi** ve son aktivitelerini tek panelde görüntüleme
+   - `RP LEVELLER` kategorisindeki ve `LEVEL_ID:` etiketli kanallardaki RP katılımlarını (`.ooc` / `.cagir` hariç) oturum bazlı otomatik takip eder; ayrıca `/defender rp-ekle` ile manuel düzeltme yapılabilir
+
+## Slash Komutları (`/defender` & `/user-log`)
 
 | Komut | Açıklama |
 | --- | --- |
+| `/user-log <id>` | *(Admin)* Discord ID ile kullanıcının katıldığı RP sayısı, uyarıları, banları, kickleri, timeout ve blacklist kayıtlarını gösterir |
+| `/defender uyari-ver <kullanici> <sebep>` | Üyeye resmi uyarı verir, DM gönderir ve siciline kaydeder |
+| `/defender uyari-kaldir <kullanici> [uyari_id]` | Belirli uyarıyı (`W-1`), son uyarıyı veya `hepsi` ile tüm uyarıları siler |
+| `/defender uyarilar <kullanici>` | Üyenin tüm kayıtlı uyarılarını listeler |
+| `/defender rp-ekle <kullanici> [adet] [not]` | Üyenin RP sayısını manuel artırır veya düzeltir |
 | `/defender kurulum` | `#defender-log`, Blacklist rolü (`1573704309034586286`) ve ilk sunucu yedeğini tek tıkla kurar |
 | `/defender durum` | Tüm koruma modüllerinin canlı durumunu gösterir |
 | `/defender modul <ad> <aktif>` | İstenen koruma modülünü açar/kapatır *(Sunucu Sahibi / Whitelist Admin)* |

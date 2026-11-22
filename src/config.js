@@ -19,6 +19,11 @@ const config = {
   defaultLogChannelName: (
     process.env.DEFAULT_LOG_CHANNEL_NAME || "defender-log"
   ).trim(),
+  rpCategoryName: (process.env.RP_CATEGORY_NAME || "RP LEVELLER").trim(),
+  rpSessionGapMinutes: parsePositiveNumber(
+    process.env.RP_SESSION_GAP_MINUTES,
+    30
+  ),
   snapshotIntervalMinutes: parsePositiveNumber(
     process.env.SNAPSHOT_INTERVAL_MINUTES,
     15
@@ -28,5 +33,6 @@ const config = {
 config.snapshotIntervalMs = Math.round(
   config.snapshotIntervalMinutes * 60 * 1000
 );
+config.rpSessionGapMs = Math.round(config.rpSessionGapMinutes * 60 * 1000);
 
 module.exports = config;

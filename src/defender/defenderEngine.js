@@ -5,6 +5,8 @@ const { PunishmentEngine } = require("./punishmentEngine");
 const { AntiNukeEngine } = require("./antiNuke");
 const { AntiRaidEngine } = require("./antiRaid");
 const { ChatDefenseEngine } = require("./chatDefense");
+const { UserLogStore } = require("./userLogStore");
+const { UserLogManager } = require("./userLogManager");
 
 class DefenderEngine {
   constructor(options = {}) {
@@ -57,6 +59,26 @@ class DefenderEngine {
         warnNoticeMs: options.warnNoticeMs ?? 5000,
       }
     );
+
+    this.userLogStore =
+      options.userLogStore ||
+      new UserLogStore({
+        persist: options.persist !== false,
+        filePath: options.userLogFilePath,
+      });
+
+    this.userLogManager =
+      options.userLogManager ||
+      new UserLogManager(this.userLogStore, this.store, this.punishmentEngine, {
+        rpCategoryName: options.rpCategoryName || "RP LEVELLER",
+        rpSessionGapMs: options.rpSessionGapMs ?? 30 * 60 * 1000,
+        blacklistRoleId: options.blacklistRoleId,
+        auditLogDelayMs: options.auditLogDelayMs ?? 400,
+        logger: this.logger,
+      });
+
+    this.punishmentEngine.userLogManager = this.userLogManager;
+    this.chatDefense.userLogManager = this.userLogManager;
 
     this._snapshotTimer = null;
     this._pruneTimer = null;
@@ -148,17 +170,32 @@ class DefenderEngine {
       this.antiNuke.onGuildMemberUpdate(oldMember, newMember).catch((err) => {
         this.logger.error("[DEFENDER/memberUpdate]", err.message);
       });
+      this.userLogManager.onGuildMemberUpdate(oldMember, newMember).catch((err) => {
+        this.logger.error("[USERLOG/memberUpdate]", err.message);
+      });
     });
 
     client.on(Events.GuildBanAdd, (ban) => {
       this.antiNuke.onGuildBanAdd(ban).catch((err) => {
         this.logger.error("[DEFENDER/banAdd]", err.message);
       });
+      this.userLogManager.onGuildBanAdd(ban).catch((err) => {
+        this.logger.error("[USERLOG/banAdd]", err.message);
+      });
+    });
+
+    client.on(Events.GuildBanRemove, (ban) => {
+      this.userLogManager.onGuildBanRemove(ban).catch((err) => {
+        this.logger.error("[USERLOG/banRemove]", err.message);
+      });
     });
 
     client.on(Events.GuildMemberRemove, (member) => {
       this.antiNuke.onGuildMemberRemove(member).catch((err) => {
         this.logger.error("[DEFENDER/memberRemove]", err.message);
+      });
+      this.userLogManager.onGuildMemberRemove(member).catch((err) => {
+        this.logger.error("[USERLOG/memberRemove]", err.message);
       });
     });
 
@@ -190,7 +227,7 @@ class DefenderEngine {
       });
     });
 
-    // --- Anti-Bot + Anti-Raid Events ---
+    // --- Anti-Bot + Anti-Raid + User Log Events ---
     client.on(Events.GuildMemberAdd, (member) => {
       if (member.user?.bot) {
         this.antiNuke.onBotAdd(member).catch((err) => {
@@ -200,13 +237,19 @@ class DefenderEngine {
         this.antiRaid.onGuildMemberAdd(member).catch((err) => {
           this.logger.error("[DEFENDER/memberAdd]", err.message);
         });
+        this.userLogManager.onGuildMemberAdd(member).catch((err) => {
+          this.logger.error("[USERLOG/memberAdd]", err.message);
+        });
       }
     });
 
-    // --- Chat Defense Events ---
+    // --- Chat Defense + RP Activity Events ---
     client.on(Events.MessageCreate, (message) => {
       this.chatDefense.onMessageCreate(message).catch((err) => {
         this.logger.error("[DEFENDER/messageCreate]", err.message);
+      });
+      this.userLogManager.onMessageCreate(message).catch((err) => {
+        this.logger.error("[USERLOG/messageCreate]", err.message);
       });
     });
 

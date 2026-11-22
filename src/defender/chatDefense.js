@@ -111,6 +111,7 @@ class ChatDefenseEngine {
   constructor(store, punishmentEngine, options = {}) {
     this.store = store;
     this.punishmentEngine = punishmentEngine;
+    this.userLogManager = options.userLogManager || null;
     this.tracker = new ActionWindowTracker();
     this.warnNoticeMs = options.warnNoticeMs ?? 5000;
   }
@@ -149,6 +150,14 @@ class ChatDefenseEngine {
       totalStrikes = r.count;
     }
 
+    if (this.userLogManager) {
+      this.userLogManager.recordAutoMod(
+        guild.id,
+        userId,
+        message.author?.tag || message.author?.username || null
+      );
+    }
+
     let actionTaken = "delete_warn";
 
     if (totalStrikes >= 4) {
@@ -168,6 +177,14 @@ class ChatDefenseEngine {
           .timeout(10 * 60 * 1000, `[Defender/${module}] ${reason}`)
           .catch(() => {});
       }
+      if (this.userLogManager) {
+        this.userLogManager.recordDirectTimeout(guild.id, userId, {
+          durationMs: 10 * 60 * 1000,
+          reason: `[${module}] ${reason}`,
+          moderatorTag: "Defender/ChatDefense",
+          tag: message.author?.tag || message.author?.username || null,
+        });
+      }
       actionTaken = "timeout_10m";
       await this._sendTempWarn(
         message.channel,
@@ -178,6 +195,14 @@ class ChatDefenseEngine {
         await message.member
           .timeout(60 * 1000, `[Defender/${module}] ${reason}`)
           .catch(() => {});
+      }
+      if (this.userLogManager) {
+        this.userLogManager.recordDirectTimeout(guild.id, userId, {
+          durationMs: 60 * 1000,
+          reason: `[${module}] ${reason}`,
+          moderatorTag: "Defender/ChatDefense",
+          tag: message.author?.tag || message.author?.username || null,
+        });
       }
       actionTaken = "timeout_1m";
       await this._sendTempWarn(

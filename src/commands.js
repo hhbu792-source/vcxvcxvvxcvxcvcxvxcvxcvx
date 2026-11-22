@@ -195,6 +195,82 @@ function buildCommands() {
     )
     .addSubcommand((sub) =>
       sub
+        .setName("uyari-ver")
+        .setDescription(
+          "Bir uyeye resmi uyari verir, DM bildirimi gonderir ve siciline kaydeder."
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("kullanici")
+            .setDescription("Uyarilacak kullanici")
+            .setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("sebep")
+            .setDescription("Uyari sebebi")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("uyari-kaldir")
+        .setDescription(
+          "Bir uyenin uyarisini siler (ID, 'hepsi' veya bos birakilirsa son uyari)."
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("kullanici")
+            .setDescription("Uyarisi silinecek kullanici")
+            .setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("uyari_id")
+            .setDescription("Silinecek uyari ID (W-1), 'hepsi' veya bos (son uyari)")
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("uyarilar")
+        .setDescription("Bir uyenin tum kayitli uyarilarini listeler.")
+        .addUserOption((opt) =>
+          opt
+            .setName("kullanici")
+            .setDescription("Uyarilari goruntulenecek kullanici")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("rp-ekle")
+        .setDescription(
+          "Bir uyenin katildigi RP sayisini manuel artirir veya duzeltir."
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("kullanici")
+            .setDescription("RP sayisi guncellenecek kullanici")
+            .setRequired(true)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("adet")
+            .setDescription("Eklenecek/cikarilacak RP sayisi (varsayilan: 1)")
+            .setMinValue(-100)
+            .setMaxValue(100)
+            .setRequired(false)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("not")
+            .setDescription("Aciklama veya RP notu (istege bagli)")
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName("yedek")
         .setDescription("Sunucunun rol, kanal ve izin yedegini (snapshot) anlik olarak alir.")
     )
@@ -204,7 +280,21 @@ function buildCommands() {
         .setDescription("Son kaydedilen guvenlik olaylarini listeler.")
     );
 
-  return [defender.toJSON()];
+  const userLog = new SlashCommandBuilder()
+    .setName("user-log")
+    .setDescription(
+      "Admin komutu: Discord ID ile kullanicinin RP, uyari, ban, kick ve sicil kayitlarini gosterir."
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .setContexts(InteractionContextType.Guild)
+    .addStringOption((opt) =>
+      opt
+        .setName("id")
+        .setDescription("Kullanicinin Discord ID'si (etiket de yazilabilir)")
+        .setRequired(true)
+    );
+
+  return [defender.toJSON(), userLog.toJSON()];
 }
 
 module.exports = { buildCommands, MODULE_CHOICES, PUNISHMENT_CHOICES };

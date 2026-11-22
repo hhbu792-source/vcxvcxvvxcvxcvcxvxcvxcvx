@@ -23,6 +23,8 @@ const defender = new DefenderEngine({
   blacklistRoleName: config.blacklistRoleName,
   ticketPanelChannelId: config.ticketPanelChannelId,
   defaultLogChannelName: config.defaultLogChannelName,
+  rpCategoryName: config.rpCategoryName,
+  rpSessionGapMs: config.rpSessionGapMs,
   snapshotIntervalMs: config.snapshotIntervalMs,
 });
 
@@ -93,7 +95,12 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== "defender") return;
+  if (
+    interaction.commandName !== "defender" &&
+    interaction.commandName !== "user-log"
+  ) {
+    return;
+  }
 
   if (!interaction.guild) {
     await interaction.reply({
@@ -111,8 +118,56 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
-  const sub = interaction.options.getSubcommand();
   const guild = interaction.guild;
+
+  if (interaction.commandName === "user-log") {
+    try {
+      const rawId = interaction.options.getString("id", true);
+      const targetId = cleanSnowflake(rawId);
+      if (!targetId) {
+        await interaction.reply({
+          content: "Gecerli bir Discord ID'si girin (ornek: `123456789012345678`).",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const [discordUser, member, liveBan] = await Promise.all([
+        client.users.fetch(targetId).catch(() => null),
+        guild.members.fetch(targetId).catch(() => null),
+        guild.bans.fetch(targetId).catch(() => null),
+      ]);
+
+      const gDef = defender.store.getGuild(guild.id);
+      const defenderBlacklisted = Boolean(gDef.blacklistedUsers[targetId]);
+
+      const embed = defender.userLogManager.buildUserLogEmbed({
+        guild,
+        targetId,
+        discordUser,
+        member,
+        liveBan,
+        defenderBlacklisted,
+      });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error("[USER-LOG KOMUT HATASI]", err);
+      const msg = "Kullanici kaydi getirilirken bir hata olustu.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(msg).catch(() => {});
+      } else {
+        await interaction
+          .reply({ content: msg, flags: MessageFlags.Ephemeral })
+          .catch(() => {});
+      }
+    }
+    return;
+  }
+
+  const sub = interaction.options.getSubcommand();
 
   const coreProtectedSubs = new Set([
     "modul",
@@ -440,7 +495,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         guild,
         member,
         reason,
-        interaction.user.tag
+        interaction.user.tag,
+        interaction.user.id
       );
       if (!res.ok) {
         await interaction.editReply(
@@ -476,7 +532,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const res = await defender.punishmentEngine.unblacklistMember(
         guild,
         member,
-        interaction.user.tag
+        interaction.user.tag,
+        interaction.user.id
       );
 
       await defender.punishmentEngine.logIncident(guild, {
@@ -491,6 +548,122 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.editReply(
         `<@${user.id}> blacklist'ten cikarildi (${res.restoredCount} eski rol geri yuklendi).`
       );
+      return;
+    }
+
+    if (sub === "uyari-ver") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const user = interaction.options.getUser("kullanici", true);
+      const reason = interaction.options.getString("sebep", true).trim();
+
+      if (user.bot) {
+        await interaction.editReply("Bot hesaplarina uyari verilemez.");
+        return;
+      }
+      if (user.id === interaction.user.id) {
+        await interaction.editReply("Kendinize uyari veremezsiniz.");
+        return;
+      }
+      if (user.id === guild.ownerId) {
+        await interaction.editReply("Sunucu sahibine uyari verilemez.");
+        return;
+      }
+
+      const res = await defender.userLogManager.warnUser(
+        guild,
+        user,
+        reason,
+        interaction.user
+      );
+
+      await interaction.editReply(
+        [
+          `<@${user.id}> kullanicisina uyari verildi.`,
+          `Uyari ID: \`${res.entry.id}\``,
+          `Sebep: ${res.entry.reason}`,
+          `Toplam Uyari: **${res.totalWarnings}**`,
+          `DM Bildirimi: **${res.dmSent ? "Gonderildi" : "Gonderilemedi (DM kapali)"}**`,
+        ].join("\n")
+      );
+      return;
+    }
+
+    if (sub === "uyari-kaldir") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const user = interaction.options.getUser("kullanici", true);
+      const warningId = interaction.options.getString("uyari_id", false);
+
+      const res = await defender.userLogManager.removeWarning(
+        guild,
+        user.id,
+        warningId,
+        interaction.user
+      );
+
+      if (res.removedCount === 0) {
+        await interaction.editReply(
+          warningId
+            ? `<@${user.id}> kullanicisinda \`${warningId}\` kodlu bir uyari bulunamadi.`
+            : `<@${user.id}> kullanicisinin silinecek uyarisi bulunmuyor.`
+        );
+        return;
+      }
+
+      await interaction.editReply(
+        `<@${user.id}> kullanicisindan **${res.removedCount}** uyari silindi (\`${res.removedIds.join(", ")}\`). Kalan uyari: **${res.remainingCount}**.`
+      );
+      return;
+    }
+
+    if (sub === "uyarilar") {
+      const user = interaction.options.getUser("kullanici", true);
+      const embed = defender.userLogManager.buildWarningsEmbed(
+        guild,
+        user,
+        user.id
+      );
+      await interaction.reply({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === "rp-ekle") {
+      const user = interaction.options.getUser("kullanici", true);
+      const delta = interaction.options.getInteger("adet", false) ?? 1;
+      const note =
+        interaction.options.getString("not", false) || "Manuel RP kaydi";
+
+      if (user.bot) {
+        await interaction.reply({
+          content: "Bot hesaplarina RP kaydi eklenemez.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (delta === 0) {
+        await interaction.reply({
+          content: "Adet 0 olamaz (ornek: 1 veya -1 girin).",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const res = defender.userLogStore.adjustRpCount(guild.id, user.id, {
+        delta,
+        note,
+        moderatorId: interaction.user.id,
+        moderatorTag: interaction.user.tag,
+        tag: user.tag || user.username,
+      });
+
+      const sign = delta > 0 ? `+${delta}` : String(delta);
+      await interaction.reply({
+        content: `<@${user.id}> RP sayisi guncellendi (${sign}). Yeni toplam RP sayisi: **${res.totalRpCount}** (Not: ${note}).`,
+        flags: MessageFlags.Ephemeral,
+      });
       return;
     }
 

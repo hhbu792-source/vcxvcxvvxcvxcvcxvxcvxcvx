@@ -29,6 +29,7 @@ class PunishmentEngine {
     this.blacklistRoleName = options.blacklistRoleName || "BLACKLIST";
     this.ticketPanelChannelId = options.ticketPanelChannelId || null;
     this.defaultLogChannelName = options.defaultLogChannelName || "defender-log";
+    this.userLogManager = options.userLogManager || null;
     this.logger = options.logger || console;
 
     /** Prevent duplicate simultaneous punishments on same guild:user during a burst */
@@ -224,7 +225,7 @@ class PunishmentEngine {
     return removedIds;
   }
 
-  async blacklistMember(guild, member, reason, actorTag = "Defender") {
+  async blacklistMember(guild, member, reason, actorTag = "Defender", actorId = null) {
     if (!this._canActOnMember(guild, member)) {
       return { ok: false, reason: "HIERARCHY_BLOCKED" };
     }
@@ -250,6 +251,16 @@ class PunishmentEngine {
         .catch(() => {});
     }
 
+    if (this.userLogManager) {
+      this.userLogManager.recordDirectBlacklist(guild.id, member.id, {
+        action: "add",
+        reason,
+        moderatorId: actorId,
+        moderatorTag: actorTag,
+        tag: member.user?.tag || member.user?.username || null,
+      });
+    }
+
     return {
       ok: true,
       action: "blacklist",
@@ -258,7 +269,7 @@ class PunishmentEngine {
     };
   }
 
-  async unblacklistMember(guild, member, actorTag = "Yonetici") {
+  async unblacklistMember(guild, member, actorTag = "Yonetici", actorId = null) {
     const g = this.store.getGuild(guild.id);
     const blRoleId = this.blacklistRoleId || g.blacklistRoleId;
     const saved = this.store.popBlacklistedUser(guild.id, member.id);
@@ -294,6 +305,16 @@ class PunishmentEngine {
           .catch(() => {});
         restoredCount = validIds.length;
       }
+    }
+
+    if (this.userLogManager) {
+      this.userLogManager.recordDirectBlacklist(guild.id, member.id, {
+        action: "remove",
+        reason: "Blacklist kaldirildi",
+        moderatorId: actorId,
+        moderatorTag: actorTag,
+        tag: member.user?.tag || member.user?.username || null,
+      });
     }
 
     return { ok: true, hadRecord: Boolean(saved), restoredCount };

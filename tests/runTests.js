@@ -238,12 +238,13 @@ function createMockGuild() {
     },
   };
 
-  function addAudit(action, executorId, targetId) {
+  function addAudit(action, executorId, targetId, reason = null) {
     auditEntries.push({
       id: `audit-${++seq}`,
       action,
       executorId,
       targetId,
+      reason,
       createdTimestamp: Date.now(),
     });
   }
@@ -358,13 +359,19 @@ async function runTests() {
 
   // 1. Slash command structure check
   const cmds = buildCommands();
-  assert.strictEqual(cmds.length, 1);
-  assert.strictEqual(cmds[0].name, "defender");
-  assert(cmds[0].options.length >= 12);
-  assert(cmds[0].options.some((o) => o.name === "blacklist"));
-  assert(cmds[0].options.some((o) => o.name === "blacklist-kaldir"));
-  assert(!cmds[0].options.some((o) => o.name === "karantina"));
-  console.log(`[OK] Slash komutlari: /defender (${cmds[0].options.length} alt komut, blacklist/blacklist-kaldir) dogrulandi.`);
+  assert.strictEqual(cmds.length, 2);
+  const defCmd = cmds.find((c) => c.name === "defender");
+  const userLogCmd = cmds.find((c) => c.name === "user-log");
+  assert(defCmd && defCmd.options.length >= 16);
+  assert(defCmd.options.some((o) => o.name === "blacklist"));
+  assert(defCmd.options.some((o) => o.name === "blacklist-kaldir"));
+  assert(defCmd.options.some((o) => o.name === "uyari-ver"));
+  assert(defCmd.options.some((o) => o.name === "uyari-kaldir"));
+  assert(defCmd.options.some((o) => o.name === "uyarilar"));
+  assert(defCmd.options.some((o) => o.name === "rp-ekle"));
+  assert(!defCmd.options.some((o) => o.name === "karantina"));
+  assert(userLogCmd && userLogCmd.options.some((o) => o.name === "id" && o.required));
+  console.log(`[OK] Slash komutlari: /defender (${defCmd.options.length} alt komut) ve /user-log (admin + id) dogrulandi.`);
 
   // 2. Setup mock guild with exact Blacklist Role ID 1573704309034586286 & ticket panel channel 1573522477655654544
   const { guild, addAudit, addMember } = createMockGuild();
@@ -708,7 +715,201 @@ async function runTests() {
   assert.strictEqual(editRes.module, "ANTI_PHISHING");
   console.log("[OK] Sohbet Korumasi: Token/Webhook sizintisi, maskeli phishing, davet, mention, spam ve kademeli blacklist dogrulandi.");
 
-  // 13. Forensic incident logs verified
+  // 13. Warning System + User-Log (RP count, warnings, bans, kicks, timeouts, blacklists)
+  const rpCategory = await guild.channels.create({
+    name: "RP LEVELLER",
+    type: ChannelType.GuildCategory,
+  });
+  const rpCh0 = await guild.channels.create({
+    name: "level-0",
+    type: ChannelType.GuildText,
+    parent: rpCategory.id,
+    topic: "LEVEL_ID:0",
+  });
+  const rpCh1 = await guild.channels.create({
+    name: "level-1",
+    type: ChannelType.GuildText,
+    parent: rpCategory.id,
+    topic: "LEVEL_ID:1",
+  });
+  const callLogCh = await guild.channels.create({
+    name: "cagri-log",
+    type: ChannelType.GuildText,
+    parent: rpCategory.id,
+    topic: "[CALL_LOG] Yetkili cagri kayitlari",
+  });
+
+  const player = addMember({
+    id: "123456789012345678",
+    username: "rpplayer",
+  });
+  const playerDms = [];
+  player.user.send = async (payload) => {
+    playerDms.push(payload);
+    return { id: "dm-1" };
+  };
+  const adminActor = { id: guild.ownerId, tag: "Admin#0001" };
+
+  // 13a. Automatic RP participation tracking (deduplicates within same RP channel, skips .ooc/.cagir/cagri-log)
+  const rpMsg1 = createChatMsg(rpCh0, player, ".me koridora goz atti");
+  const rpRes1 = await defender.userLogManager.onMessageCreate(rpMsg1);
+  assert.strictEqual(rpRes1.tracked, true);
+  assert.strictEqual(rpRes1.newSession, true);
+  assert.strictEqual(rpRes1.totalRpCount, 1);
+
+  const rpMsg2 = createChatMsg(rpCh0, player, "Etrafta hafif bir ugultu vardi.");
+  const rpRes2 = await defender.userLogManager.onMessageCreate(rpMsg2);
+  assert.strictEqual(rpRes2.tracked, true);
+  assert.strictEqual(rpRes2.newSession, false);
+  assert.strictEqual(rpRes2.totalRpCount, 1);
+
+  const oocMsg = createChatMsg(rpCh0, player, ".ooc birazdan geliyorum");
+  const oocRes = await defender.userLogManager.onMessageCreate(oocMsg);
+  assert.strictEqual(oocRes.tracked, false);
+
+  const callMsg = createChatMsg(callLogCh, player, "test");
+  const callRes = await defender.userLogManager.onMessageCreate(callMsg);
+  assert.strictEqual(callRes.tracked, false);
+
+  const rpMsg3 = createChatMsg(rpCh1, player, ".do kapidan iceri girdi");
+  const rpRes3 = await defender.userLogManager.onMessageCreate(rpMsg3);
+  assert.strictEqual(rpRes3.tracked, true);
+  assert.strictEqual(rpRes3.newSession, true);
+  assert.strictEqual(rpRes3.totalRpCount, 2);
+
+  // Manual RP adjust (+2 -> 4, -1 -> 3)
+  const adj1 = defender.userLogStore.adjustRpCount(guild.id, player.id, {
+    delta: 2,
+    note: "Gecmis RP oturumlari",
+    moderatorId: adminActor.id,
+    moderatorTag: adminActor.tag,
+  });
+  assert.strictEqual(adj1.totalRpCount, 4);
+  const adj2 = defender.userLogStore.adjustRpCount(guild.id, player.id, {
+    delta: -1,
+    note: "Hatali kayit duzeltme",
+    moderatorId: adminActor.id,
+    moderatorTag: adminActor.tag,
+  });
+  assert.strictEqual(adj2.totalRpCount, 3);
+
+  // 13b. Warnings: add, DM, log, remove single, remove all
+  const w1 = await defender.userLogManager.warnUser(
+    guild,
+    player.user,
+    "RP kurallarini ihlal etti",
+    adminActor
+  );
+  assert.strictEqual(w1.entry.id, "W-1");
+  assert.strictEqual(w1.totalWarnings, 1);
+  assert.strictEqual(w1.dmSent, true);
+  assert.strictEqual(playerDms.length, 1);
+
+  const w2 = await defender.userLogManager.warnUser(
+    guild,
+    player.user,
+    "Metagaming yapma",
+    adminActor
+  );
+  assert.strictEqual(w2.entry.id, "W-2");
+  assert.strictEqual(w2.totalWarnings, 2);
+
+  const rem1 = await defender.userLogManager.removeWarning(
+    guild,
+    player.id,
+    "W-1",
+    adminActor
+  );
+  assert.strictEqual(rem1.removedCount, 1);
+  assert.strictEqual(rem1.remainingCount, 1);
+
+  const warnEmbed = defender.userLogManager.buildWarningsEmbed(
+    guild,
+    player.user,
+    player.id
+  );
+  assert.strictEqual(emojiRegex.test(JSON.stringify(warnEmbed.toJSON())), false);
+
+  // 13c. Kick, Ban, Unban, Timeout, Blacklist tracking in User-Log
+  addAudit(AuditLogEvent.MemberKick, adminActor.id, player.id, "Uyari sonrasi kick");
+  const kickRes = await defender.userLogManager.onGuildMemberRemove(player);
+  assert.strictEqual(kickRes.recorded, true);
+  assert.strictEqual(kickRes.type, "kick");
+
+  addAudit(AuditLogEvent.MemberBanAdd, adminActor.id, player.id, "Agir kural ihlali");
+  const banTrack = await defender.userLogManager.onGuildBanAdd({
+    guild,
+    user: player.user,
+    reason: "Agir kural ihlali",
+  });
+  assert.strictEqual(banTrack.recorded, true);
+
+  // GuildMemberRemove fired immediately after ban must NOT duplicate as kick/leave
+  const postBanRemove = await defender.userLogManager.onGuildMemberRemove(player);
+  assert.strictEqual(postBanRemove.skippedBecauseBan, true);
+
+  addAudit(AuditLogEvent.MemberBanRemove, adminActor.id, player.id, "Af");
+  const unbanTrack = await defender.userLogManager.onGuildBanRemove({
+    guild,
+    user: player.user,
+  });
+  assert.strictEqual(unbanTrack.recorded, true);
+
+  // Manual timeout detection
+  const futureTimeout = Date.now() + 5 * 60 * 1000;
+  addAudit(AuditLogEvent.MemberUpdate, adminActor.id, player.id, "Sohbet susturma");
+  const toTrack = await defender.userLogManager.onGuildMemberUpdate(
+    { id: player.id, guild, user: player.user, communicationDisabledUntilTimestamp: null, roles: { cache: new MockCollection() } },
+    { id: player.id, guild, user: player.user, communicationDisabledUntilTimestamp: futureTimeout, roles: { cache: new MockCollection() } }
+  );
+  assert.strictEqual(toTrack.recorded, true);
+  assert.strictEqual(toTrack.results[0].type, "timeout");
+
+  // Direct blacklist -> records once without duplicating on memberUpdate
+  const blTrackRes = await defender.punishmentEngine.blacklistMember(
+    guild,
+    player,
+    "Test blacklist",
+    adminActor.tag,
+    adminActor.id
+  );
+  assert.strictEqual(blTrackRes.ok, true);
+  const dupBlUpdate = await defender.userLogManager.onGuildMemberUpdate(
+    { id: player.id, guild, user: player.user, roles: { cache: new MockCollection() } },
+    player
+  );
+  assert.strictEqual(dupBlUpdate.recorded, false);
+
+  const userRec = defender.userLogStore.peekUser(guild.id, player.id);
+  assert.strictEqual(userRec.rp.count, 3);
+  assert.strictEqual(userRec.rp.messageCount, 3);
+  assert.strictEqual(userRec.warnings.length, 1);
+  assert.strictEqual(userRec.kicks.length, 1);
+  assert.strictEqual(userRec.bans.length, 1);
+  assert.strictEqual(userRec.unbans.length, 1);
+  assert.strictEqual(userRec.timeouts.length, 1);
+  assert.strictEqual(userRec.blacklists.length, 1);
+
+  const userLogEmbed = defender.userLogManager.buildUserLogEmbed({
+    guild,
+    targetId: player.id,
+    discordUser: player.user,
+    member: player,
+    liveBan: null,
+    defenderBlacklisted: true,
+  });
+  const embedJson = JSON.stringify(userLogEmbed.toJSON());
+  assert(embedJson.includes("Katildigi RP Sayisi: **3**"));
+  assert(embedJson.includes("Uyari: **1**"));
+  assert(embedJson.includes("Ban: **1**"));
+  assert(embedJson.includes("Kick: **1**"));
+  assert(embedJson.includes("Timeout: **1**"));
+  assert(embedJson.includes("Blacklist: **1** (Aktif)"));
+  assert(embedJson.includes("W-2"));
+  assert.strictEqual(emojiRegex.test(embedJson), false);
+  console.log("[OK] Uyari Sistemi & /user-log: RP sayisi, uyarilar, ban, kick, timeout, blacklist ve emojisiz embed dogrulandi.");
+
+  // 14. Forensic incident logs verified
   assert(logCh._sent.length >= 8);
   const status = defender.getGuildStatus(guild);
   assert(status.incidentCount >= 8);

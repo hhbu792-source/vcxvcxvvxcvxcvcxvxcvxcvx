@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "deploy": "node src/deployCommands.js",
+    "check": "node --check src/index.js src/config.js src/commands.js src/deployCommands.js src/defender/*.js",
     "test": "node tests/runTests.js"
   },
   "dependencies": {

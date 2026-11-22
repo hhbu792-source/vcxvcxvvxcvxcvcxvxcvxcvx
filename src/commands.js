@@ -359,7 +359,22 @@ function buildCommands() {
     .addSubcommand((sub) =>
       sub
         .setName("olaylar")
-        .setDescription("Son kaydedilen güvenlik olaylarını listeler.")
+        .setDescription("Kaydedilen güvenlik olaylarını filtreli ve sayfalı olarak listeler.")
+        .addStringOption((opt) =>
+          opt
+            .setName("modul")
+            .setDescription("Olay türüne göre filtrele (isteğe bağlı)")
+            .setRequired(false)
+            .addChoices(
+              { name: "Tümü", value: "ALL" },
+              { name: "Anti-Nuke", value: "ANTI_NUKE" },
+              { name: "Anti-Raid / Alt-Shield", value: "ANTI_RAID" },
+              { name: "Sohbet Koruması", value: "CHAT_DEFENSE" },
+              { name: "Uyarılar", value: "WARNING" },
+              { name: "Blacklist", value: "BLACKLIST" },
+              { name: "Acil Kilit & Ayarlar", value: "CONFIG" }
+            )
+        )
     );
 
   const userLog = new SlashCommandBuilder()

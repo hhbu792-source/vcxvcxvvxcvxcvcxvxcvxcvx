@@ -483,10 +483,122 @@ async function handleDefenderStatusButton(interaction) {
   }
 }
 
+const CHAT_DEFENSE_MODULES = new Set([
+  "ANTI_SPAM",
+  "ANTI_INVITE",
+  "ANTI_PHISHING",
+  "ANTI_MENTION",
+  "ANTI_TOKEN_LEAK",
+]);
+
+function matchesIncidentFilter(inc, filter) {
+  if (!filter || filter === "ALL") return true;
+  if (filter === "ANTI_RAID") {
+    return inc.module === "ANTI_RAID" || inc.module === "ALT_SHIELD";
+  }
+  if (filter === "CHAT_DEFENSE") {
+    return CHAT_DEFENSE_MODULES.has(inc.module);
+  }
+  if (filter === "CONFIG") {
+    return (
+      inc.module === "CONFIG" ||
+      inc.module === "LOCKDOWN" ||
+      inc.module === "WHITELIST" ||
+      inc.module === "STAFF_NOTE"
+    );
+  }
+  return inc.module === filter;
+}
+
+function buildIncidentsPayload(guild, filter = "ALL", page = 1) {
+  const PAGE_SIZE = 8;
+  const g = defender.store.getGuild(guild.id);
+  const filtered = [...g.incidents]
+    .reverse()
+    .filter((inc) => matchesIncidentFilter(inc, filter));
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.max(
+    1,
+    Math.min(Math.trunc(Number(page) || 1), totalPages)
+  );
+  const slice = filtered.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE
+  );
+
+  const lines =
+    slice.length === 0
+      ? "Bu filtreye uygun kaydedilmiş bir güvenlik olayı bulunmuyor."
+      : slice
+          .map(
+            (inc) =>
+              `- **[${inc.id}]** \`${inc.module}\` (${inc.severity}) — ${inc.action} | <t:${Math.floor(inc.ts / 1000)}:R>`
+          )
+          .join("\n");
+
+  const embed = new EmbedBuilder()
+    .setColor(0x2c3e50)
+    .setAuthor({ name: "Defender Adli Olay Kayıtları" })
+    .setTitle(`Güvenlik Olayları - ${guild.name} (${filter})`)
+    .setDescription(lines.slice(0, 3900))
+    .setFooter({
+      text: `Sayfa ${currentPage}/${totalPages} | Eşleşen: ${filtered.length} | Toplam: ${g.incidentCounter}`,
+    })
+    .setTimestamp();
+
+  const components = [];
+  if (totalPages > 1) {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`def:incidents:${filter}:${Math.max(1, currentPage - 1)}`)
+        .setLabel("Önceki Sayfa")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(currentPage <= 1),
+      new ButtonBuilder()
+        .setCustomId(`def:incidents:info:${currentPage}`)
+        .setLabel(`Sayfa ${currentPage} / ${totalPages}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId(
+          `def:incidents:${filter}:${Math.min(totalPages, currentPage + 1)}`
+        )
+        .setLabel("Sonraki Sayfa")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(currentPage >= totalPages)
+    );
+    components.push(row);
+  }
+
+  return { embeds: [embed], components };
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isButton() && interaction.customId.startsWith("def:status:")) {
       await handleDefenderStatusButton(interaction);
+      return;
+    }
+
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith("def:incidents:")
+    ) {
+      if (!interaction.guild || !isAdministrator(interaction)) {
+        await interaction.reply({
+          content:
+            "Bu paneli sadece **Yönetici (Administrator)** yetkisine sahip kişiler kullanabilir.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const parts = interaction.customId.split(":");
+      const filter = parts[2] || "ALL";
+      const page = Math.max(1, Number(parts[3]) || 1);
+      await interaction.update(
+        buildIncidentsPayload(interaction.guild, filter, page)
+      );
       return;
     }
 
@@ -1170,31 +1282,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (sub === "olaylar") {
-      const g = defender.store.getGuild(guild.id);
-      const recent = g.incidents.slice(-10).reverse();
-      if (recent.length === 0) {
-        await interaction.reply({
-          content: "Henüz kaydedilmiş bir güvenlik olayı bulunmuyor.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
-      const lines = recent.map(
-        (inc) =>
-          `**[${inc.id}]** \`${inc.module}\` (${inc.severity}) - ${inc.action} | <t:${Math.floor(inc.ts / 1000)}:R>`
-      );
-
-      const embed = new EmbedBuilder()
-        .setColor(0x2c3e50)
-        .setAuthor({ name: "Defender Adli Olay Kayıtları" })
-        .setTitle(`Son Güvenlik Olayları (${guild.name})`)
-        .setDescription(lines.join("\n"))
-        .setFooter({ text: `Toplam kayıtlı olay: ${g.incidentCounter}` })
-        .setTimestamp();
-
+      const filter = interaction.options.getString("modul", false) || "ALL";
       await interaction.reply({
-        embeds: [embed],
+        ...buildIncidentsPayload(guild, filter, 1),
         flags: MessageFlags.Ephemeral,
       });
       return;
